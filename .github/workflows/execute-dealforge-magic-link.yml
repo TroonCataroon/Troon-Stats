@@ -1,0 +1,67 @@
+name: Execute DealForge Magic Link
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  execute:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] Execute DealForge Magic Link'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out workflow tooling
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: tooling
+
+      - name: Check out DealForge branch
+        uses: actions/checkout@v4
+        with:
+          ref: dealforge-live
+          fetch-depth: 0
+          path: repo
+
+      - name: Extract and execute corrected migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          source = Path('tooling/.github/workflows/switch-dealforge-magic-link.yml').read_text()
+          start_marker = '      - name: Apply passwordless email authentication\n'
+          end_marker = '      - name: Verify DealForge\n'
+          start = source.index(start_marker)
+          end = source.index(end_marker, start)
+          section = source[start:end]
+          run_marker = '        run: |\n'
+          script = section.split(run_marker, 1)[1]
+          script = textwrap.dedent(script)
+          script = script.replace(
+              'pattern.subn(replacement, text, count=1)',
+              'pattern.subn(lambda _match: replacement, text, count=1)',
+          )
+          Path('/tmp/apply-dealforge-magic-link.sh').write_text(script)
+          PY
+          cd repo
+          bash /tmp/apply-dealforge-magic-link.sh
+
+      - name: Verify DealForge
+        run: cd repo/dealforge-live && npm run check
+
+      - name: Commit verified authentication change
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dealforge-live
+          git commit -m "feat: switch DealForge to email magic links"
+          git push origin HEAD:dealforge-live
