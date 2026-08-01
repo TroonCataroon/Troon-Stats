@@ -29,7 +29,7 @@ function withCleanEnvironment(callback) {
 test("gateway status is public but reports missing secure configuration", async () => {
   await withCleanEnvironment(async () => {
     const response = responseRecorder();
-    await gateway({ method: "GET", query: {}, headers: {} }, response);
+    await gateway({ method: "GET", url: "/api/index", headers: {} }, response);
     assert.equal(response.statusCode, 200);
     assert.equal(response.body.authentication.status, "configuration-required");
     assert.equal(response.body.sources.gsa.status, "live");
@@ -40,9 +40,25 @@ test("gateway status is public but reports missing secure configuration", async 
 test("live source searches fail closed when authentication is not configured", async () => {
   await withCleanEnvironment(async () => {
     const response = responseRecorder();
-    await gateway({ method: "GET", query: { source: "gsa", q: "laptop" }, headers: {} }, response);
+    await gateway({ method: "GET", url: "/api/index?source=gsa&q=laptop", headers: {} }, response);
     assert.equal(response.statusCode, 503);
     assert.equal(response.body.authentication, "required");
+  });
+});
+
+
+test("gateway parses URLSearchParams without touching the deprecated request.query getter", async () => {
+  await withCleanEnvironment(async () => {
+    const response = responseRecorder();
+    const request = {
+      method: "GET",
+      url: "/api/index",
+      headers: { host: "dealforge.test" },
+      get query() { throw new Error("request.query must not be accessed"); },
+    };
+    await gateway(request, response);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.service, "DealForge live-data gateway");
   });
 });
 

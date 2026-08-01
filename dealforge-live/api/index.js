@@ -533,10 +533,11 @@ async function gsaHandler(request, response) {
   }
 
   const now = Date.now();
-  const forceRefresh = String(request.query?.refresh ?? "") === "1";
-  const query = cleanText(request.query?.q, 100);
-  const state = cleanText(request.query?.state, 2).toUpperCase();
-  const limit = Math.min(300, Math.max(1, Number(request.query?.limit) || 180));
+  const params = requestSearchParams(request);
+  const forceRefresh = params.get("refresh") === "1";
+  const query = cleanText(params.get("q"), 100);
+  const state = cleanText(params.get("state"), 2).toUpperCase();
+  const limit = Math.min(300, Math.max(1, Number(params.get("limit")) || 180));
 
   try {
     let cache = memoryCache;
@@ -664,7 +665,8 @@ async function ebayHandler(request, response) {
   }
 
   const connected = Boolean(process.env.EBAY_CLIENT_ID && process.env.EBAY_CLIENT_SECRET);
-  const action = String(request.query?.action || "status");
+  const params = requestSearchParams(request);
+  const action = String(params.get("action") || "status");
 
   if (action === "status") {
     response.setHeader("Cache-Control", "no-store");
@@ -689,8 +691,8 @@ async function ebayHandler(request, response) {
     });
   }
 
-  const query = sanitize(request.query?.q, 100);
-  const limit = Math.min(50, Math.max(1, Number(request.query?.limit) || 24));
+  const query = sanitize(params.get("q"), 100);
+  const limit = Math.min(50, Math.max(1, Number(params.get("limit")) || 24));
   if (!query) return response.status(400).json({ error: "A search query is required." });
 
   try {
@@ -863,7 +865,8 @@ export default async function handler(request, response) {
     return response.status(405).json({ error: "Method not allowed" });
   }
 
-  const source = cleanGatewayQueryValue(request.query?.source);
+  const params = requestSearchParams(request);
+  const source = cleanGatewayQueryValue(params.get("source"));
   if (!source) {
     response.setHeader("Cache-Control", "no-store");
     return response.status(200).json({
@@ -954,6 +957,12 @@ function applyGatewayHeaders(response) {
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+}
+
+function requestSearchParams(request) {
+  const protocol = String(request.headers?.["x-forwarded-proto"] || "https").split(",")[0].trim();
+  const host = String(request.headers?.host || "dealforge.local");
+  return new URL(String(request.url || "/"), `${protocol}://${host}`).searchParams;
 }
 
 function cleanGatewayQueryValue(value) {
