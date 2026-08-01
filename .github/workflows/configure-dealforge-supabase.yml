@@ -1,0 +1,120 @@
+name: Configure DealForge Supabase
+
+on:
+  issues:
+    types:
+      - opened
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  configure:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] Configure DealForge Supabase'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out DealForge branch
+        uses: actions/checkout@v4
+        with:
+          ref: dealforge-live
+          fetch-depth: 0
+
+      - name: Add failing public configuration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > dealforge-live/tests/public-config.test.js <<'EOF'
+          import assert from "node:assert/strict";
+          import test from "node:test";
+          import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";
+
+          test("DealForge has safe public Supabase runtime defaults", () => {
+            assert.equal(SUPABASE_URL, "https://hdpwlspschpqimgszagb.supabase.co");
+            assert.match(SUPABASE_PUBLISHABLE_KEY, /^sb_publishable_/);
+          });
+          EOF
+          cd dealforge-live
+          if node --test tests/public-config.test.js; then
+            echo "Expected the configuration test to fail before implementation."
+            exit 1
+          fi
+
+      - name: Configure public Supabase runtime defaults
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > dealforge-live/lib/public-config.js <<'EOF'
+          export const SUPABASE_URL = process.env.SUPABASE_URL || "https://hdpwlspschpqimgszagb.supabase.co";
+          export const SUPABASE_PUBLISHABLE_KEY =
+            process.env.SUPABASE_PUBLISHABLE_KEY ||
+            process.env.SUPABASE_ANON_KEY ||
+            "sb_publishable_7ntu-srY6QkMPJ111jQMgg_xWVVLsV5";
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path('dealforge-live')
+
+          config = root / 'api/config.js'
+          text = config.read_text()
+          text = 'import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";\n\n' + text
+          text = text.replace(
+              '  const supabaseUrl = process.env.SUPABASE_URL || "";\n  const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || "";',
+              '  const supabaseUrl = SUPABASE_URL;\n  const publishableKey = SUPABASE_PUBLISHABLE_KEY;'
+          )
+          config.write_text(text)
+
+          health = root / 'api/health.js'
+          text = health.read_text()
+          text = 'import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";\n\n' + text
+          text = text.replace('    supabaseUrl: Boolean(process.env.SUPABASE_URL),', '    supabaseUrl: Boolean(SUPABASE_URL),')
+          text = text.replace(
+              '    supabasePublishableKey: Boolean(process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY),',
+              '    supabasePublishableKey: Boolean(SUPABASE_PUBLISHABLE_KEY),'
+          )
+          text = text.replace(
+              '    supabaseServiceRole: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),',
+              '    supabaseServiceRole: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),\n    supabaseServiceRoleRequired: false,'
+          )
+          health.write_text(text)
+
+          gateway = root / 'api/index.js'
+          text = gateway.read_text()
+          text = 'import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";\n\n' + text
+          text = text.replace(
+              'function authEnvironmentConfigured() {\n  return Boolean(\n    process.env.SUPABASE_URL &&\n    (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY)\n  );\n}',
+              'function authEnvironmentConfigured() {\n  return Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY);\n}'
+          )
+          text = text.replace(
+              '  const key = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY;',
+              '  const key = SUPABASE_PUBLISHABLE_KEY;'
+          )
+          text = text.replace(
+              '    const upstream = await fetch(`${String(process.env.SUPABASE_URL).replace(/\\/$/, "")}/auth/v1/user`, {',
+              '    const upstream = await fetch(`${SUPABASE_URL.replace(/\\/$/, "")}/auth/v1/user`, {'
+          )
+          gateway.write_text(text)
+          PY
+
+      - name: Verify DealForge
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dealforge-live
+          npm run check
+
+      - name: Commit configured application
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dealforge-live/api dealforge-live/lib/public-config.js dealforge-live/tests/public-config.test.js
+          if git diff --cached --quiet; then
+            echo "Supabase configuration is already current."
+            exit 0
+          fi
+          git commit -m "feat: connect DealForge to Supabase"
+          git push origin HEAD:dealforge-live
