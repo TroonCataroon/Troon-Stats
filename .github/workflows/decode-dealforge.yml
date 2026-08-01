@@ -28,6 +28,13 @@ jobs:
           ref: dealforge-live
           fetch-depth: 0
 
+      - name: Save branch runtime assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/dealforge-runtime
+          cp dealforge-live/assets/runtime-*.txt /tmp/dealforge-runtime/ 2>/dev/null || true
+
       - name: Restore exact production assets
         shell: bash
         run: |
@@ -55,78 +62,110 @@ jobs:
           import gzip
           import hashlib
           import re
+          import zlib
           from pathlib import Path
 
-          root = Path('dealforge-live')
-          assets = root / 'assets'
-          output = root / 'source'
+          assets = Path('dealforge-live/assets')
+          runtime_assets = Path('/tmp/dealforge-runtime')
+          output = Path('dealforge-live/source')
           output.mkdir(parents=True, exist_ok=True)
+
+          for existing in output.iterdir():
+              if existing.is_file():
+                  existing.unlink()
+
+          failures: list[str] = []
 
           def natural_key(path: Path) -> list[object]:
               return [int(part) if part.isdigit() else part for part in re.split(r'(\d+)', path.name)]
 
-          def decode_base64_gzip(target: str, patterns: list[str], required: bool = True) -> None:
+          def paths_for(root: Path, patterns: list[str]) -> list[Path]:
               paths: list[Path] = []
               for pattern in patterns:
-                  paths.extend(assets.glob(pattern))
-              paths = sorted(set(paths), key=natural_key)
-              if not paths:
-                  if required:
-                      raise FileNotFoundError(f'No chunks found for {target}')
-                  return
+                  paths.extend(root.glob(pattern))
+              return sorted(set(paths), key=natural_key)
 
+          def base64_bytes(root: Path, patterns: list[str]) -> tuple[bytes, list[Path]]:
+              paths = paths_for(root, patterns)
+              if not paths:
+                  raise FileNotFoundError(', '.join(patterns))
               encoded = ''.join(path.read_text(encoding='utf-8') for path in paths)
               encoded = ''.join(encoded.split())
               encoded += '=' * (-len(encoded) % 4)
-              compressed = base64.b64decode(encoded, validate=False)
+              return base64.b64decode(encoded, validate=False), paths
+
+          def write_gzip_base64(target: str, root: Path, patterns: list[str]) -> None:
+              compressed, paths = base64_bytes(root, patterns)
               decoded = gzip.decompress(compressed)
               (output / target).write_bytes(decoded)
               print(f'{target}: {len(paths)} chunks, {len(decoded)} decoded bytes')
 
-          def decode_hex_gzip(target: str, pattern: str) -> None:
-              paths = sorted(assets.glob(pattern), key=natural_key)
+          def write_gzip_hex(target: str, root: Path, pattern: str) -> None:
+              paths = paths_for(root, [pattern])
               if not paths:
-                  return
+                  raise FileNotFoundError(pattern)
               encoded = ''.join(path.read_text(encoding='utf-8') for path in paths)
-              encoded = ''.join(encoded.split())
-              decoded = gzip.decompress(bytes.fromhex(encoded))
+              compressed = bytes.fromhex(''.join(encoded.split()))
+              decoded = gzip.decompress(compressed)
               (output / target).write_bytes(decoded)
               print(f'{target}: {len(paths)} chunks, {len(decoded)} decoded bytes')
 
-          decode_base64_gzip('app.js', ['app-[0-9]*.txt'])
-          decode_base64_gzip('styles.css', ['styles-[0-9]*.txt'])
-          decode_base64_gzip('scoring.js', ['scoring-[0-9]*.txt'])
+          def write_partial_gzip(target: str, root: Path, patterns: list[str]) -> None:
+              compressed, paths = base64_bytes(root, patterns)
+              decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+              recovered = bytearray()
+              try:
+                  for start in range(0, len(compressed), 4096):
+                      recovered.extend(decoder.decompress(compressed[start:start + 4096]))
+                  recovered.extend(decoder.flush())
+              except zlib.error as exc:
+                  failures.append(f'{target}: {exc}')
+              if recovered:
+                  (output / target).write_bytes(recovered)
+                  print(f'{target}: recovered {len(recovered)} partial bytes from {len(paths)} chunks')
 
-          try:
-              decode_base64_gzip('runtime.js', ['runtime-[0-9]*.txt'], required=False)
-          except Exception as exc:
-              print(f'Optional runtime bundle skipped: {exc}')
+          attempts = [
+              ('app.js', lambda: write_gzip_base64('app.js', assets, ['app-[0-9]*.txt'])),
+              ('styles.css', lambda: write_gzip_base64('styles.css', assets, ['styles-[0-9]*.txt'])),
+              ('scoring.js', lambda: write_gzip_base64('scoring.js', assets, ['scoring-[0-9]*.txt'])),
+              ('runtime.js', lambda: write_gzip_base64('runtime.js', runtime_assets, ['runtime-[0-9]*.txt'])),
+              ('runtime-from-hex.js', lambda: write_gzip_hex('runtime-from-hex.js', runtime_assets, 'runtime-hex-*.txt')),
+          ]
 
-          try:
-              decode_hex_gzip('runtime-from-hex.js', 'runtime-hex-*.txt')
-          except Exception as exc:
-              print(f'Optional hex runtime bundle skipped: {exc}')
+          for name, operation in attempts:
+              try:
+                  operation()
+              except Exception as exc:
+                  failures.append(f'{name}: {type(exc).__name__}: {exc}')
+                  print(f'{name} failed: {exc}')
+
+          if not (output / 'app.js').exists():
+              write_partial_gzip('app.partial.js', assets, ['app-[0-9]*.txt'])
 
           lines = []
           for path in sorted(output.iterdir()):
-              if path.name == 'SHA256SUMS' or not path.is_file():
+              if path.name in {'SHA256SUMS', 'RECOVERY_ERRORS.txt'} or not path.is_file():
                   continue
               digest = hashlib.sha256(path.read_bytes()).hexdigest()
               lines.append(f'{digest}  {path.name}')
           (output / 'SHA256SUMS').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          (output / 'RECOVERY_ERRORS.txt').write_text('\n'.join(failures) + '\n', encoding='utf-8')
+
+          if not any(path.suffix in {'.js', '.css'} for path in output.iterdir()):
+              raise RuntimeError('No DealForge source could be recovered')
           PY
 
       - name: Commit recovered source to DealForge branch
         shell: bash
         run: |
           set -euo pipefail
-          git restore dealforge-live/assets
-          if git diff --quiet -- dealforge-live/source; then
+          git restore --staged --worktree dealforge-live/assets
+          if git status --porcelain -- dealforge-live/source | grep -q .; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add dealforge-live/source
+            git commit -m "chore: materialize DealForge source"
+            git push origin HEAD:dealforge-live
+          else
             echo "Recovered source is already current."
-            exit 0
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dealforge-live/source
-          git commit -m "chore: materialize DealForge source"
-          git push origin HEAD:dealforge-live
