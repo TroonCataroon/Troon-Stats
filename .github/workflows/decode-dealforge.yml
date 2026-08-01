@@ -28,6 +28,20 @@ jobs:
           ref: dealforge-live
           fetch-depth: 0
 
+      - name: Restore exact production assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          production_commit="613fd12e5b79e3609dac6bf2e3eb97a063ef430a"
+          git checkout "$production_commit" -- \
+            dealforge-live/assets/app-0.txt \
+            dealforge-live/assets/app-1.txt \
+            dealforge-live/assets/app-2.txt \
+            dealforge-live/assets/app-3.txt \
+            dealforge-live/assets/styles-0.txt \
+            dealforge-live/assets/styles-1.txt \
+            dealforge-live/assets/scoring-0.txt
+
       - name: Decode deployment assets
         shell: bash
         run: |
@@ -106,6 +120,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git restore dealforge-live/assets
           if git diff --quiet -- dealforge-live/source; then
             echo "Recovered source is already current."
             exit 0
