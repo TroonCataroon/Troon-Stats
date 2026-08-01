@@ -6,19 +6,26 @@ on:
       - main
     paths:
       - "dealforge-live/rebuild-bundle/**"
+  issues:
+    types:
+      - opened
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   materialize:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issues' && github.event.issue.title == '[automation] Materialize DealForge rebuild') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Check out rebuild branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || 'dealforge-production-rebuild' }}
           fetch-depth: 0
 
       - name: Materialize conventional source tree
@@ -66,4 +73,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A dealforge-live
           git commit -m "feat: rebuild DealForge as a production application"
-          git push origin HEAD:${{ github.head_ref }}
+          git push origin HEAD:dealforge-production-rebuild
