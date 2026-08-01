@@ -6,6 +6,9 @@ on:
       - main
     paths:
       - ".github/workflows/decode-dealforge.yml"
+  pull_request:
+    branches:
+      - main
   issues:
     types:
       - opened
