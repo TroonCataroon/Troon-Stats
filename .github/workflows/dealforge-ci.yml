@@ -1,0 +1,28 @@
+name: Verify DealForge
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "dealforge-live/**"
+      - ".github/workflows/dealforge-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dealforge-live
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@v4
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Test and build
+        run: npm run check
