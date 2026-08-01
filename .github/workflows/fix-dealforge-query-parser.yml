@@ -1,0 +1,133 @@
+name: Harden DealForge request parsing
+
+on:
+  issues:
+    types:
+      - opened
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    if: >-
+      (github.event_name == 'issues' && github.event.issue.title == '[automation] Harden DealForge request parsing') ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out DealForge branch
+        uses: actions/checkout@v4
+        with:
+          ref: dealforge-live
+          fetch-depth: 0
+
+      - name: Replace deprecated request query parsing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('dealforge-live/api/index.js')
+          text = source.read_text()
+          replacements = {
+              '''  const now = Date.now();
+            const forceRefresh = String(request.query?.refresh ?? "") === "1";
+            const query = cleanText(request.query?.q, 100);
+            const state = cleanText(request.query?.state, 2).toUpperCase();
+            const limit = Math.min(300, Math.max(1, Number(request.query?.limit) || 180));
+          ''': '''  const now = Date.now();
+            const params = requestSearchParams(request);
+            const forceRefresh = params.get("refresh") === "1";
+            const query = cleanText(params.get("q"), 100);
+            const state = cleanText(params.get("state"), 2).toUpperCase();
+            const limit = Math.min(300, Math.max(1, Number(params.get("limit")) || 180));
+          ''',
+              '''  const connected = Boolean(process.env.EBAY_CLIENT_ID && process.env.EBAY_CLIENT_SECRET);
+            const action = String(request.query?.action || "status");
+          ''': '''  const connected = Boolean(process.env.EBAY_CLIENT_ID && process.env.EBAY_CLIENT_SECRET);
+            const params = requestSearchParams(request);
+            const action = String(params.get("action") || "status");
+          ''',
+              '''  const query = sanitize(request.query?.q, 100);
+            const limit = Math.min(50, Math.max(1, Number(request.query?.limit) || 24));
+          ''': '''  const query = sanitize(params.get("q"), 100);
+            const limit = Math.min(50, Math.max(1, Number(params.get("limit")) || 24));
+          ''',
+              '''  const source = cleanGatewayQueryValue(request.query?.source);
+          ''': '''  const params = requestSearchParams(request);
+            const source = cleanGatewayQueryValue(params.get("source"));
+          ''',
+          }
+          for old, new in replacements.items():
+              if old in text:
+                  text = text.replace(old, new)
+              elif new not in text:
+                  raise RuntimeError(f'Expected source block was not found: {old[:80]!r}')
+
+          helper = '''function requestSearchParams(request) {
+            const protocol = String(request.headers?.["x-forwarded-proto"] || "https").split(",")[0].trim();
+            const host = String(request.headers?.host || "dealforge.local");
+            return new URL(String(request.url || "/"), `${protocol}://${host}`).searchParams;
+          }
+
+          '''
+          marker = 'function cleanGatewayQueryValue(value) {'
+          if helper not in text:
+              if marker not in text:
+                  raise RuntimeError('Gateway query marker was not found')
+              text = text.replace(marker, helper + marker)
+          source.write_text(text)
+
+          tests = Path('dealforge-live/tests/api.test.js')
+          test_text = tests.read_text()
+          test_text = test_text.replace(
+              'await gateway({ method: "GET", query: {}, headers: {} }, response);',
+              'await gateway({ method: "GET", url: "/api/index", headers: {} }, response);',
+          )
+          test_text = test_text.replace(
+              'await gateway({ method: "GET", query: { source: "gsa", q: "laptop" }, headers: {} }, response);',
+              'await gateway({ method: "GET", url: "/api/index?source=gsa&q=laptop", headers: {} }, response);',
+          )
+          regression = '''
+          test("gateway parses URLSearchParams without touching the deprecated request.query getter", async () => {
+            await withCleanEnvironment(async () => {
+              const response = responseRecorder();
+              const request = {
+                method: "GET",
+                url: "/api/index",
+                headers: { host: "dealforge.test" },
+                get query() { throw new Error("request.query must not be accessed"); },
+              };
+              await gateway(request, response);
+              assert.equal(response.statusCode, 200);
+              assert.equal(response.body.service, "DealForge live-data gateway");
+            });
+          });
+          '''
+          test_marker = 'test("public configuration endpoint never exposes secret provider credentials", async () => {'
+          if 'deprecated request.query getter' not in test_text:
+              if test_marker not in test_text:
+                  raise RuntimeError('API test marker was not found')
+              test_text = test_text.replace(test_marker, regression + '\n' + test_marker)
+          tests.write_text(test_text)
+          PY
+
+      - name: Verify application
+        working-directory: dealforge-live
+        run: npm run check
+
+      - name: Commit hardened gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "DealForge request parsing is already hardened."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dealforge-live/api/index.js dealforge-live/tests/api.test.js
+          git commit -m "fix: use standard URL parsing in DealForge gateway"
+          git push origin HEAD:dealforge-live
