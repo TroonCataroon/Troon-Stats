@@ -1,0 +1,381 @@
+name: Switch DealForge to Magic Link
+
+on:
+  issues:
+    types:
+      - opened
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  switch-auth:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] Switch DealForge to Magic Link'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out DealForge branch
+        uses: actions/checkout@v4
+        with:
+          ref: dealforge-live
+          fetch-depth: 0
+
+      - name: Apply email magic-link authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dealforge-live
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          client = Path('lib/supabase-rest.js')
+          text = client.read_text()
+          old = '''  async signInWithGoogle(redirectTo = globalThis.location?.origin) {
+            if (!this.configured) throw new Error("Supabase authentication is not configured.");
+            const url = new URL(`${this.url}/auth/v1/authorize`);
+            url.searchParams.set("provider", "google");
+            if (redirectTo) url.searchParams.set("redirect_to", redirectTo);
+            globalThis.location.assign(url.toString());
+          }
+          '''
+          new = '''  async signInWithMagicLink(email, redirectTo = globalThis.location?.origin) {
+            if (!this.configured) throw new Error("Supabase authentication is not configured.");
+            const normalizedEmail = String(email ?? "").trim().toLowerCase();
+            if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(normalizedEmail)) {
+              throw new Error("Enter a valid email address.");
+            }
+
+            const url = new URL(`${this.url}/auth/v1/otp`);
+            if (redirectTo) url.searchParams.set("redirect_to", redirectTo);
+            const response = await this.fetchImpl(url.toString(), {
+              method: "POST",
+              headers: {
+                apikey: this.publishableKey,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                email: normalizedEmail,
+                create_user: true,
+              }),
+            });
+            const body = await readBody(response);
+            if (!response.ok) {
+              throw new Error(body?.msg || body?.error_description || body?.message || "Unable to send the sign-in link.");
+            }
+            return true;
+          }
+          '''
+          if old not in text:
+            raise SystemExit('Expected Google sign-in method was not found')
+          client.write_text(text.replace(old, new))
+
+          app = Path('web/app.js')
+          text = app.read_text()
+          text = text.replace(
+            '''      <p>DealForge is configured as a private, single-user application. Sign in with the Google account that claimed the workspace.</p>
+                <button class="button primary" data-action="sign-in">Sign in with Google</button>
+          ''',
+            '''      <p>DealForge is configured as a private, single-user application. Request a sign-in link using the authorized email address.</p>
+                ${renderMagicLinkForm()}
+          ''',
+          )
+          text = text.replace(
+            '''      ${state.message ? `<div class="callout error-callout">${escapeHtml(state.message)}</div>` : ""}
+                <button class="button primary" data-action="sign-in">Continue with Google</button>
+          ''',
+            '''      ${state.message ? `<div class="callout ${state.message.startsWith("Check your email") ? "success-callout" : "error-callout"}">${escapeHtml(state.message)}</div>` : ""}
+                ${renderMagicLinkForm()}
+          ''',
+          )
+          text = text.replace(
+            '    <p>Set the following Vercel environment variables, run the included Supabase migration, and enable Google in Supabase Auth.</p>',
+            '    <p>Set the following Vercel environment variables, run the included Supabase migration, and enable passwordless email authentication in Supabase Auth.</p>',
+          )
+          marker = 'function authLayout(content) {'
+          form = '''function renderMagicLinkForm() {
+            return `
+              <form id="magic-link-form" class="auth-form">
+                <div class="field">
+                  <label for="auth-email">Email address</label>
+                  <input class="input" id="auth-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+                </div>
+                <button class="button primary" type="submit" ${state.busy ? "disabled" : ""}>${state.busy ? "Sending…" : "Email me a sign-in link"}</button>
+                <p class="auth-note">Only the preauthorized owner email can claim this private workspace.</p>
+              </form>`;
+          }
+
+          '''
+          if marker not in text:
+            raise SystemExit('Auth layout marker was not found')
+          text = text.replace(marker, form + marker)
+          text = text.replace('    if (action === "sign-in") return state.client.signInWithGoogle(window.location.origin);\n', '')
+          text = text.replace(
+            '    if (form.matches(".listing-analysis-form")) return await saveListingAnalysis(form.dataset.rowId, new FormData(form));',
+            '    if (form.id === "magic-link-form") return await requestMagicLink(new FormData(form));\n    if (form.matches(".listing-analysis-form")) return await saveListingAnalysis(form.dataset.rowId, new FormData(form));',
+          )
+          marker = 'async function runSearch(formData) {'
+          request = '''async function requestMagicLink(formData) {
+            const email = String(formData.get("email") || "");
+            state.accessDenied = false;
+            await withBusy(async () => {
+              const redirectTo = `${window.location.origin}${window.location.pathname}`;
+              await state.client.signInWithMagicLink(email, redirectTo);
+              state.message = "Check your email for the one-time DealForge sign-in link.";
+            });
+          }
+
+          '''
+          if marker not in text:
+            raise SystemExit('Search function marker was not found')
+          text = text.replace(marker, request + marker)
+          app.write_text(text)
+
+          styles = Path('web/styles.css')
+          text = styles.read_text()
+          text = text.replace(
+            '.auth-card p { color: var(--muted); line-height: 1.7; }',
+            '.auth-card p { color: var(--muted); line-height: 1.7; }\n.auth-form { display: grid; gap: 14px; margin-top: 22px; }\n.auth-form .button { width: 100%; }\n.auth-note { margin: 0; font-size: 12px; }',
+          )
+          text = text.replace(
+            '.error-callout { border-left-color: var(--danger); background: rgba(255, 125, 117, .08); color: #ffc2be; }',
+            '.error-callout { border-left-color: var(--danger); background: rgba(255, 125, 117, .08); color: #ffc2be; }\n.success-callout { border-left-color: var(--accent-2); background: rgba(57, 201, 139, .08); color: #baf4d6; }',
+          )
+          styles.write_text(text)
+
+          config = Path('api/config.js')
+          text = config.read_text().replace('authProvider: "google"', 'authProvider: "email-magic-link"')
+          config.write_text(text)
+
+          gateway = Path('api/index.js')
+          text = gateway.read_text().replace('provider: "supabase-google"', 'provider: "supabase-email-magic-link"')
+          gateway.write_text(text)
+
+          tests = Path('tests/supabase-rest.test.js')
+          text = tests.read_text()
+          text += '''
+
+test("magic-link sign-in posts a normalized email and redirect URL", async () => {
+  const calls = [];
+  const client = new (await import("../lib/supabase-rest.js")).SupabaseRestClient({
+    url: "https://abc.supabase.co",
+    publishableKey: "publishable-key",
+    storage: null,
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+  });
+
+  const result = await client.signInWithMagicLink("  Owner@Example.com  ", "https://dealforge.example/auth");
+
+  assert.equal(result, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://abc.supabase.co/auth/v1/otp?redirect_to=https%3A%2F%2Fdealforge.example%2Fauth");
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(calls[0].options.headers.apikey, "publishable-key");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    email: "owner@example.com",
+    create_user: true,
+  });
+});
+
+test("magic-link sign-in rejects an invalid email without sending a request", async () => {
+  let called = false;
+  const client = new (await import("../lib/supabase-rest.js")).SupabaseRestClient({
+    url: "https://abc.supabase.co",
+    publishableKey: "publishable-key",
+    storage: null,
+    fetchImpl: async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    },
+  });
+
+  await assert.rejects(() => client.signInWithMagicLink("not-an-email"), /valid email/i);
+  assert.equal(called, false);
+});
+'''
+          tests.write_text(text)
+
+          api_tests = Path('tests/api.test.js')
+          text = api_tests.read_text()
+          needle = '    assert.equal(response.body.authentication.status, "configured");'
+          if needle in text and 'supabase-email-magic-link' not in text:
+            text = text.replace(needle, needle + '\n    assert.equal(response.body.authentication.provider, "supabase-email-magic-link");')
+          api_tests.write_text(text)
+
+          smoke = Path('scripts/smoke.mjs')
+          text = smoke.read_text()
+          text = text.replace(
+            '  "supabase/migrations/001_dealforge.sql",',
+            '  "supabase/migrations/001_dealforge.sql",\n  "supabase/migrations/002_magic_link_owner_identity.sql",',
+          )
+          text = text.replace(
+            'if (!app.includes("claim_app_owner")) throw new Error("Single-owner authentication gate is missing.");',
+            'if (!app.includes("claim_app_owner")) throw new Error("Single-owner authentication gate is missing.");\nif (!app.includes("magic-link-form")) throw new Error("Email magic-link sign-in form is missing.");\nif (app.includes("signInWithGoogle")) throw new Error("Legacy Google OAuth sign-in is still present.");',
+          )
+          smoke.write_text(text)
+          PY
+
+          cat > tests/auth-ui.test.js <<'EOF'
+          import test from "node:test";
+          import assert from "node:assert/strict";
+          import { readFile } from "node:fs/promises";
+
+          const appSource = await readFile(new URL("../web/app.js", import.meta.url), "utf8");
+
+          test("signed-out workspace uses an email magic-link form", () => {
+            assert.match(appSource, /id="magic-link-form"/);
+            assert.match(appSource, /type="email"/);
+            assert.match(appSource, /Email me a sign-in link/);
+            assert.doesNotMatch(appSource, /signInWithGoogle/);
+            assert.doesNotMatch(appSource, /Continue with Google/);
+          });
+
+          test("access-denied copy directs the owner to the authorized email", () => {
+            assert.match(appSource, /authorized email address/);
+            assert.doesNotMatch(appSource, /Google account that claimed/);
+          });
+          EOF
+
+          cat > supabase/migrations/002_magic_link_owner_identity.sql <<'EOF'
+          begin;
+
+          create extension if not exists pgcrypto;
+          create schema if not exists private;
+
+          create table if not exists private.owner_identity (
+            singleton boolean primary key default true check (singleton),
+            email_sha256 text not null,
+            configured_at timestamptz not null default now()
+          );
+
+          revoke all on table private.owner_identity from public, anon, authenticated;
+
+          create or replace function public.claim_app_owner()
+          returns boolean
+          language plpgsql
+          security definer
+          set search_path = public, private, auth, pg_temp
+          as $$
+          declare
+            current_user_id uuid := (select auth.uid());
+            current_email text := lower(coalesce((select auth.jwt() ->> 'email'), ''));
+          begin
+            if current_user_id is null or current_email = '' then
+              return false;
+            end if;
+
+            if not exists (
+              select 1
+              from private.owner_identity
+              where singleton = true
+                and email_sha256 = encode(digest(current_email, 'sha256'), 'hex')
+            ) then
+              return false;
+            end if;
+
+            perform pg_advisory_xact_lock(hashtext('dealforge-single-owner'));
+
+            insert into public.app_owner (singleton, user_id, email)
+            values (true, current_user_id, current_email)
+            on conflict (singleton) do nothing;
+
+            return exists (
+              select 1
+              from public.app_owner
+              where singleton = true
+                and user_id = current_user_id
+            );
+          end;
+          $$;
+
+          revoke all on function public.claim_app_owner() from public, anon;
+          grant execute on function public.claim_app_owner() to authenticated;
+
+          comment on table private.owner_identity is
+            'Provision exactly one SHA-256 hash of the normalized DealForge owner email outside source control.';
+
+          commit;
+          EOF
+
+          cat > lib/auth-settings.js <<'EOF'
+          export function summarizeAuthSettings(settings = {}) {
+            const external = settings?.external ?? {};
+            return {
+              emailMagicLinkEnabled: external.email === true,
+              googleEnabled: external.google === true,
+              signupDisabled: settings?.disable_signup === true,
+            };
+          }
+          EOF
+
+          cat > api/auth-status.js <<'EOF'
+          import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";
+          import { summarizeAuthSettings } from "../lib/auth-settings.js";
+
+          export default async function handler(request, response) {
+            if (request.method !== "GET") {
+              response.setHeader("Allow", "GET");
+              return response.status(405).json({ error: "Method not allowed" });
+            }
+            try {
+              const upstream = await fetch(`${SUPABASE_URL.replace(/\/$/, "")}/auth/v1/settings`, {
+                headers: { apikey: SUPABASE_PUBLISHABLE_KEY },
+                signal: AbortSignal.timeout(10_000),
+              });
+              const body = await upstream.json();
+              if (!upstream.ok) throw new Error(body?.msg || `Auth settings returned ${upstream.status}`);
+              response.setHeader("Cache-Control", "no-store");
+              return response.status(200).json({
+                provider: "email-magic-link",
+                ...summarizeAuthSettings(body),
+              });
+            } catch (error) {
+              return response.status(502).json({
+                provider: "email-magic-link",
+                error: error instanceof Error ? error.message : "Unable to inspect auth settings",
+              });
+            }
+          }
+          EOF
+
+          cat > tests/auth-settings.test.js <<'EOF'
+          import test from "node:test";
+          import assert from "node:assert/strict";
+          import { summarizeAuthSettings } from "../lib/auth-settings.js";
+
+          test("auth settings summary exposes only provider booleans", () => {
+            assert.deepEqual(summarizeAuthSettings({
+              external: { email: true, google: false, phone: false },
+              disable_signup: false,
+              secret: "must-not-leak",
+            }), {
+              emailMagicLinkEnabled: true,
+              googleEnabled: false,
+              signupDisabled: false,
+            });
+          });
+          EOF
+
+      - name: Verify DealForge
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dealforge-live
+          npm run check
+
+      - name: Commit verified authentication change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dealforge-live
+          if git diff --cached --quiet; then
+            echo "Magic-link authentication is already current."
+            exit 0
+          fi
+          git commit -m "feat: switch DealForge to email magic links"
+          git push origin HEAD:dealforge-live
