@@ -1,0 +1,27 @@
+name: Export DealForge source
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out DealForge branch
+        uses: actions/checkout@v4
+        with:
+          ref: dealforge-live
+
+      - name: Upload editable source
+        uses: actions/upload-artifact@v4
+        with:
+          name: dealforge-source
+          path: dealforge-live/source
+          if-no-files-found: error
+          retention-days: 7
