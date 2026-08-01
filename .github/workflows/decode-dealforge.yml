@@ -1,0 +1,72 @@
+name: Recover DealForge source
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/decode-dealforge.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out DealForge branch
+        uses: actions/checkout@v4
+        with:
+          ref: dealforge-live
+          fetch-depth: 0
+
+      - name: Decode deployment assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dealforge-live/source
+
+          decode_base64_gzip() {
+            local output="$1"
+            shift
+            cat "$@" | tr -d '\r\n' | base64 --decode | gzip --decompress --stdout > "$output"
+          }
+
+          decode_base64_gzip dealforge-live/source/app.js \
+            dealforge-live/assets/app-0.txt \
+            dealforge-live/assets/app-1.txt \
+            dealforge-live/assets/app-2.txt \
+            dealforge-live/assets/app-3.txt
+
+          decode_base64_gzip dealforge-live/source/styles.css \
+            dealforge-live/assets/styles-0.txt \
+            dealforge-live/assets/styles-1.txt
+
+          decode_base64_gzip dealforge-live/source/scoring.js \
+            dealforge-live/assets/scoring-0.txt
+
+          if compgen -G "dealforge-live/assets/runtime-[0-9]*.txt" > /dev/null; then
+            mapfile -t runtime_parts < <(printf '%s\n' dealforge-live/assets/runtime-[0-9]*.txt | sort -V)
+            decode_base64_gzip dealforge-live/source/runtime.js "${runtime_parts[@]}"
+          fi
+
+          if compgen -G "dealforge-live/assets/runtime-hex-*.txt" > /dev/null; then
+            cat dealforge-live/assets/runtime-hex-*.txt | tr -d '\r\n' | xxd -r -p | gzip --decompress --stdout > dealforge-live/source/runtime-from-hex.js
+          fi
+
+          sha256sum dealforge-live/source/* > dealforge-live/source/SHA256SUMS
+
+      - name: Commit recovered source to DealForge branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- dealforge-live/source; then
+            echo "Recovered source is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dealforge-live/source
+          git commit -m "chore: materialize DealForge source"
+          git push origin HEAD:dealforge-live
