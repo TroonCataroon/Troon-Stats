@@ -1,11 +1,13 @@
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";
+
 export default function handler(request, response) {
   if (request.method !== "GET") {
     response.setHeader("Allow", "GET");
     return response.status(405).json({ error: "Method not allowed" });
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL || "";
-  const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || "";
+  const supabaseUrl = SUPABASE_URL;
+  const publishableKey = SUPABASE_PUBLISHABLE_KEY;
   response.setHeader("Cache-Control", "public, s-maxage=60, stale-while-revalidate=300");
   response.setHeader("X-Content-Type-Options", "nosniff");
   return response.status(200).json({

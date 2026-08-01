@@ -1,12 +1,15 @@
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";
+
 export default function handler(request, response) {
   if (request.method !== "GET") {
     response.setHeader("Allow", "GET");
     return response.status(405).json({ error: "Method not allowed" });
   }
   const checks = {
-    supabaseUrl: Boolean(process.env.SUPABASE_URL),
-    supabasePublishableKey: Boolean(process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY),
+    supabaseUrl: Boolean(SUPABASE_URL),
+    supabasePublishableKey: Boolean(SUPABASE_PUBLISHABLE_KEY),
     supabaseServiceRole: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+    supabaseServiceRoleRequired: false,
     gsaApiKey: Boolean(process.env.GSA_AUCTIONS_API_KEY),
     ebayClientId: Boolean(process.env.EBAY_CLIENT_ID),
     ebayClientSecret: Boolean(process.env.EBAY_CLIENT_SECRET),

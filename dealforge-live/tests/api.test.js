@@ -26,22 +26,22 @@ function withCleanEnvironment(callback) {
   });
 }
 
-test("gateway status is public but reports missing secure configuration", async () => {
+test("gateway status is public and reports configured Supabase authentication", async () => {
   await withCleanEnvironment(async () => {
     const response = responseRecorder();
     await gateway({ method: "GET", url: "/api/index", headers: {} }, response);
     assert.equal(response.statusCode, 200);
-    assert.equal(response.body.authentication.status, "configuration-required");
+    assert.equal(response.body.authentication.status, "configured");
     assert.equal(response.body.sources.gsa.status, "live");
     assert.equal(response.body.sources.ebay.status, "credentials-required");
   });
 });
 
-test("live source searches fail closed when authentication is not configured", async () => {
+test("live source searches require an authenticated session", async () => {
   await withCleanEnvironment(async () => {
     const response = responseRecorder();
     await gateway({ method: "GET", url: "/api/index?source=gsa&q=laptop", headers: {} }, response);
-    assert.equal(response.statusCode, 503);
+    assert.equal(response.statusCode, 401);
     assert.equal(response.body.authentication, "required");
   });
 });

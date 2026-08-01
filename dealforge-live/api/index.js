@@ -1,3 +1,5 @@
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";
+
 // DealForge self-contained server runtime, generated from tested source modules.
 
 const DEFAULT_SCORE_WEIGHTS = Object.freeze({
@@ -917,10 +919,7 @@ function sourceStatus() {
 }
 
 function authEnvironmentConfigured() {
-  return Boolean(
-    process.env.SUPABASE_URL &&
-    (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY)
-  );
+  return Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY);
 }
 
 async function authorizeRequest(request) {
@@ -936,9 +935,9 @@ async function authorizeRequest(request) {
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
   if (!token) return { ok: false, status: 401, error: "A valid session is required." };
 
-  const key = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY;
+  const key = SUPABASE_PUBLISHABLE_KEY;
   try {
-    const upstream = await fetch(`${String(process.env.SUPABASE_URL).replace(/\/$/, "")}/auth/v1/user`, {
+    const upstream = await fetch(`${SUPABASE_URL.replace(/\/$/, "")}/auth/v1/user`, {
       headers: {
         apikey: key,
         Authorization: `Bearer ${token}`,
