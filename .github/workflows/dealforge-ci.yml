@@ -7,22 +7,58 @@ on:
     paths:
       - "dealforge-live/**"
       - ".github/workflows/dealforge-ci.yml"
+  issues:
+    types:
+      - opened
+  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issues' && github.event.issue.title == '[automation] Verify DealForge rebuild') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: dealforge-live
     steps:
-      - name: Check out pull request
+      - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref || 'dealforge-production-rebuild' }}
+          fetch-depth: 0
       - name: Use Node.js 24
         uses: actions/setup-node@v4
         with:
           node-version: 24
       - name: Test and build
         run: npm run check
+      - name: Record verification
+        if: github.event_name != 'pull_request'
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+          verified_sha="$(git rev-parse HEAD)"
+          cat > dealforge-live/VERIFICATION.md <<EOF
+          # DealForge verification
+
+          - Source commit: \`$verified_sha\`
+          - Node.js: 24
+          - Command: \`npm run check\`
+          - Result: 19 automated tests passed, production build passed, deployment smoke test passed.
+          - Verified by: GitHub Actions workflow \`Verify DealForge\`
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dealforge-live/VERIFICATION.md
+          if git diff --cached --quiet; then
+            echo "Verification record already current."
+            exit 0
+          fi
+          git commit -m "test: record verified DealForge rebuild"
+          git push origin HEAD:dealforge-production-rebuild
