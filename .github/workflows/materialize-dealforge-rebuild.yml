@@ -1,0 +1,69 @@
+name: Materialize DealForge rebuild
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "dealforge-live/rebuild-bundle/**"
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out rebuild branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Materialize conventional source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          parts=(dealforge-live/rebuild-bundle/part-*.txt)
+          if [ ${#parts[@]} -eq 0 ]; then
+            echo "No rebuild bundle remains."
+            exit 0
+          fi
+
+          rm -rf \
+            dealforge-live/api \
+            dealforge-live/assets \
+            dealforge-live/dist \
+            dealforge-live/lib \
+            dealforge-live/scripts \
+            dealforge-live/source \
+            dealforge-live/supabase \
+            dealforge-live/tests \
+            dealforge-live/web
+          rm -f \
+            dealforge-live/app-start.js \
+            dealforge-live/index.html \
+            dealforge-live/package.json \
+            dealforge-live/scoring.js \
+            dealforge-live/vercel.json
+
+          cat "${parts[@]}" | base64 --decode > /tmp/dealforge-rebuild.tar.gz
+          echo "fc2984cc34db397e33fd17b40efb44ac66a48a3ff0a37fd7a4c0d7276775f388  /tmp/dealforge-rebuild.tar.gz" | sha256sum --check
+          tar -xzf /tmp/dealforge-rebuild.tar.gz -C dealforge-live
+          rm -rf dealforge-live/rebuild-bundle
+
+      - name: Commit materialized source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "No materialized changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A dealforge-live
+          git commit -m "feat: rebuild DealForge as a production application"
+          git push origin HEAD:${{ github.head_ref }}
