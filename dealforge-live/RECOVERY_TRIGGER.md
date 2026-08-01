@@ -1,5 +1,5 @@
 # DealForge source recovery
 
-This branch triggers the repository workflow that reconstructs the editable DealForge source from production and alternate runtime copies.
+This branch triggers the workflows that reconstruct and export the editable DealForge source.
 
-Recovery attempt: tolerant multi-source decoder.
+Recovery state: runtime source recovered and ready for inspection.
