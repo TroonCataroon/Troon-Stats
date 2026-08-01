@@ -6,6 +6,9 @@ on:
       - main
     paths:
       - ".github/workflows/decode-dealforge.yml"
+  issues:
+    types:
+      - opened
   workflow_dispatch:
 
 permissions:
@@ -13,6 +16,7 @@ permissions:
 
 jobs:
   decode:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] Recover DealForge source'
     runs-on: ubuntu-latest
     steps:
       - name: Check out DealForge branch
