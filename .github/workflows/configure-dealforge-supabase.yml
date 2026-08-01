@@ -24,6 +24,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ -f dealforge-live/lib/public-config.js ]; then
+            echo "Public configuration already exists; skipping initial red-state check."
+            exit 0
+          fi
           cat > dealforge-live/tests/public-config.test.js <<'EOF'
           import assert from "node:assert/strict";
           import test from "node:test";
@@ -52,14 +56,27 @@ jobs:
             "sb_publishable_7ntu-srY6QkMPJ111jQMgg_xWVVLsV5";
           EOF
 
+          cat > dealforge-live/tests/public-config.test.js <<'EOF'
+          import assert from "node:assert/strict";
+          import test from "node:test";
+          import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";
+
+          test("DealForge has safe public Supabase runtime defaults", () => {
+            assert.equal(SUPABASE_URL, "https://hdpwlspschpqimgszagb.supabase.co");
+            assert.match(SUPABASE_PUBLISHABLE_KEY, /^sb_publishable_/);
+          });
+          EOF
+
           python3 - <<'PY'
           from pathlib import Path
 
           root = Path('dealforge-live')
+          import_line = 'import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";\n\n'
 
           config = root / 'api/config.js'
           text = config.read_text()
-          text = 'import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";\n\n' + text
+          if 'from "../lib/public-config.js"' not in text:
+              text = import_line + text
           text = text.replace(
               '  const supabaseUrl = process.env.SUPABASE_URL || "";\n  const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY || "";',
               '  const supabaseUrl = SUPABASE_URL;\n  const publishableKey = SUPABASE_PUBLISHABLE_KEY;'
@@ -68,21 +85,24 @@ jobs:
 
           health = root / 'api/health.js'
           text = health.read_text()
-          text = 'import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";\n\n' + text
+          if 'from "../lib/public-config.js"' not in text:
+              text = import_line + text
           text = text.replace('    supabaseUrl: Boolean(process.env.SUPABASE_URL),', '    supabaseUrl: Boolean(SUPABASE_URL),')
           text = text.replace(
               '    supabasePublishableKey: Boolean(process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY),',
               '    supabasePublishableKey: Boolean(SUPABASE_PUBLISHABLE_KEY),'
           )
-          text = text.replace(
-              '    supabaseServiceRole: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),',
-              '    supabaseServiceRole: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),\n    supabaseServiceRoleRequired: false,'
-          )
+          if 'supabaseServiceRoleRequired' not in text:
+              text = text.replace(
+                  '    supabaseServiceRole: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),',
+                  '    supabaseServiceRole: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),\n    supabaseServiceRoleRequired: false,'
+              )
           health.write_text(text)
 
           gateway = root / 'api/index.js'
           text = gateway.read_text()
-          text = 'import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from "../lib/public-config.js";\n\n' + text
+          if 'from "../lib/public-config.js"' not in text:
+              text = import_line + text
           text = text.replace(
               'function authEnvironmentConfigured() {\n  return Boolean(\n    process.env.SUPABASE_URL &&\n    (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY)\n  );\n}',
               'function authEnvironmentConfigured() {\n  return Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY);\n}'
@@ -96,6 +116,23 @@ jobs:
               '    const upstream = await fetch(`${SUPABASE_URL.replace(/\\/$/, "")}/auth/v1/user`, {'
           )
           gateway.write_text(text)
+
+          api_test = root / 'tests/api.test.js'
+          text = api_test.read_text()
+          text = text.replace(
+              'test("gateway status is public but reports missing secure configuration", async () => {',
+              'test("gateway status is public and reports configured Supabase authentication", async () => {'
+          )
+          text = text.replace(
+              'assert.equal(response.body.authentication.status, "configuration-required");',
+              'assert.equal(response.body.authentication.status, "configured");'
+          )
+          text = text.replace(
+              'test("live source searches fail closed when authentication is not configured", async () => {',
+              'test("live source searches require an authenticated session", async () => {'
+          )
+          text = text.replace('assert.equal(response.statusCode, 503);', 'assert.equal(response.statusCode, 401);', 1)
+          api_test.write_text(text)
           PY
 
       - name: Verify DealForge
@@ -111,7 +148,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dealforge-live/api dealforge-live/lib/public-config.js dealforge-live/tests/public-config.test.js
+          git add dealforge-live/api dealforge-live/lib/public-config.js dealforge-live/tests/api.test.js dealforge-live/tests/public-config.test.js
           if git diff --cached --quiet; then
             echo "Supabase configuration is already current."
             exit 0
