@@ -34,35 +34,73 @@ jobs:
           set -euo pipefail
           mkdir -p dealforge-live/source
 
-          decode_base64_gzip() {
-            local output="$1"
-            shift
-            cat "$@" | tr -d '\r\n' | base64 --decode | gzip --decompress --stdout > "$output"
-          }
+          python3 - <<'PY'
+          from __future__ import annotations
 
-          decode_base64_gzip dealforge-live/source/app.js \
-            dealforge-live/assets/app-0.txt \
-            dealforge-live/assets/app-1.txt \
-            dealforge-live/assets/app-2.txt \
-            dealforge-live/assets/app-3.txt
+          import base64
+          import gzip
+          import hashlib
+          import re
+          from pathlib import Path
 
-          decode_base64_gzip dealforge-live/source/styles.css \
-            dealforge-live/assets/styles-0.txt \
-            dealforge-live/assets/styles-1.txt
+          root = Path('dealforge-live')
+          assets = root / 'assets'
+          output = root / 'source'
+          output.mkdir(parents=True, exist_ok=True)
 
-          decode_base64_gzip dealforge-live/source/scoring.js \
-            dealforge-live/assets/scoring-0.txt
+          def natural_key(path: Path) -> list[object]:
+              return [int(part) if part.isdigit() else part for part in re.split(r'(\d+)', path.name)]
 
-          if compgen -G "dealforge-live/assets/runtime-[0-9]*.txt" > /dev/null; then
-            mapfile -t runtime_parts < <(printf '%s\n' dealforge-live/assets/runtime-[0-9]*.txt | sort -V)
-            decode_base64_gzip dealforge-live/source/runtime.js "${runtime_parts[@]}"
-          fi
+          def decode_base64_gzip(target: str, patterns: list[str], required: bool = True) -> None:
+              paths: list[Path] = []
+              for pattern in patterns:
+                  paths.extend(assets.glob(pattern))
+              paths = sorted(set(paths), key=natural_key)
+              if not paths:
+                  if required:
+                      raise FileNotFoundError(f'No chunks found for {target}')
+                  return
 
-          if compgen -G "dealforge-live/assets/runtime-hex-*.txt" > /dev/null; then
-            cat dealforge-live/assets/runtime-hex-*.txt | tr -d '\r\n' | xxd -r -p | gzip --decompress --stdout > dealforge-live/source/runtime-from-hex.js
-          fi
+              encoded = ''.join(path.read_text(encoding='utf-8') for path in paths)
+              encoded = ''.join(encoded.split())
+              encoded += '=' * (-len(encoded) % 4)
+              compressed = base64.b64decode(encoded, validate=False)
+              decoded = gzip.decompress(compressed)
+              (output / target).write_bytes(decoded)
+              print(f'{target}: {len(paths)} chunks, {len(decoded)} decoded bytes')
 
-          sha256sum dealforge-live/source/* > dealforge-live/source/SHA256SUMS
+          def decode_hex_gzip(target: str, pattern: str) -> None:
+              paths = sorted(assets.glob(pattern), key=natural_key)
+              if not paths:
+                  return
+              encoded = ''.join(path.read_text(encoding='utf-8') for path in paths)
+              encoded = ''.join(encoded.split())
+              decoded = gzip.decompress(bytes.fromhex(encoded))
+              (output / target).write_bytes(decoded)
+              print(f'{target}: {len(paths)} chunks, {len(decoded)} decoded bytes')
+
+          decode_base64_gzip('app.js', ['app-[0-9]*.txt'])
+          decode_base64_gzip('styles.css', ['styles-[0-9]*.txt'])
+          decode_base64_gzip('scoring.js', ['scoring-[0-9]*.txt'])
+
+          try:
+              decode_base64_gzip('runtime.js', ['runtime-[0-9]*.txt'], required=False)
+          except Exception as exc:
+              print(f'Optional runtime bundle skipped: {exc}')
+
+          try:
+              decode_hex_gzip('runtime-from-hex.js', 'runtime-hex-*.txt')
+          except Exception as exc:
+              print(f'Optional hex runtime bundle skipped: {exc}')
+
+          lines = []
+          for path in sorted(output.iterdir()):
+              if path.name == 'SHA256SUMS' or not path.is_file():
+                  continue
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              lines.append(f'{digest}  {path.name}')
+          (output / 'SHA256SUMS').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
 
       - name: Commit recovered source to DealForge branch
         shell: bash
