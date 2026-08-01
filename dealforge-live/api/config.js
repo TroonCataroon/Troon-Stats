@@ -16,7 +16,7 @@ export default function handler(request, response) {
     supabaseUrl,
     supabasePublishableKey: publishableKey,
     authConfigured: Boolean(supabaseUrl && publishableKey),
-    authProvider: "google",
+    authProvider: "email-magic-link",
     databaseMode: supabaseUrl && publishableKey ? "supabase" : "configuration-required",
   });
 }

@@ -32,6 +32,7 @@ test("gateway status is public and reports configured Supabase authentication", 
     await gateway({ method: "GET", url: "/api/index", headers: {} }, response);
     assert.equal(response.statusCode, 200);
     assert.equal(response.body.authentication.status, "configured");
+    assert.equal(response.body.authentication.provider, "supabase-email-magic-link");
     assert.equal(response.body.sources.gsa.status, "live");
     assert.equal(response.body.sources.ebay.status, "credentials-required");
   });

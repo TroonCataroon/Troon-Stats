@@ -73,15 +73,31 @@ export class SupabaseRestClient {
     writeStoredSession(this.storage, session);
   }
 
-  async signInWithGoogle(redirectTo = globalThis.location?.origin) {
-    if (!this.configured) throw new Error("Supabase authentication is not configured.");
-    const url = new URL(`${this.url}/auth/v1/authorize`);
-    url.searchParams.set("provider", "google");
-    if (redirectTo) url.searchParams.set("redirect_to", redirectTo);
-    globalThis.location.assign(url.toString());
+  async signInWithMagicLink(email, redirectTo = globalThis.location?.origin) {
+  if (!this.configured) throw new Error("Supabase authentication is not configured.");
+  const normalizedEmail = String(email ?? "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error("Enter a valid email address.");
   }
 
-  async refreshSession() {
+  const url = new URL(`${this.url}/auth/v1/otp`);
+  if (redirectTo) url.searchParams.set("redirect_to", redirectTo);
+  const response = await this.fetchImpl(url.toString(), {
+    method: "POST",
+    headers: {
+      apikey: this.publishableKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ email: normalizedEmail, create_user: true }),
+  });
+  const body = await readBody(response);
+  if (!response.ok) {
+    throw new Error(body?.msg || body?.error_description || body?.message || "Unable to send the sign-in link.");
+  }
+  return true;
+}
+
+async refreshSession() {
     if (!this.session?.refresh_token) return null;
     const response = await this.fetchImpl(`${this.url}/auth/v1/token?grant_type=refresh_token`, {
       method: "POST",

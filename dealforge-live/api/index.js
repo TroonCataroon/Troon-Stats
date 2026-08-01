@@ -877,7 +877,7 @@ export default async function handler(request, response) {
       dataPolicy: "real-or-empty",
       authentication: {
         status: authEnvironmentConfigured() ? "configured" : "configuration-required",
-        provider: "supabase-google",
+        provider: "supabase-email-magic-link",
       },
       sources: sourceStatus(),
       generatedAt: new Date().toISOString(),

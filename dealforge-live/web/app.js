@@ -116,8 +116,8 @@ function render() {
       <div class="brand-mark">D</div>
       <div class="eyebrow">Access denied</div>
       <h1>This workspace already has an owner.</h1>
-      <p>DealForge is configured as a private, single-user application. Sign in with the Google account that claimed the workspace.</p>
-      <button class="button primary" data-action="sign-in">Sign in with Google</button>
+      <p>DealForge is configured as a private, single-user application. Request a sign-in link using the authorized email address.</p>
+      ${renderMagicLinkForm()}
     `);
     return;
   }
@@ -127,8 +127,8 @@ function render() {
       <div class="eyebrow">Private workspace</div>
       <h1>Find the deal. Count the real cost.</h1>
       <p>Search connected public auction sources, compare landed cost, save evidence, and keep your data synchronized through Supabase.</p>
-      ${state.message ? `<div class="callout error-callout">${escapeHtml(state.message)}</div>` : ""}
-      <button class="button primary" data-action="sign-in">Continue with Google</button>
+      ${state.message ? `<div class="callout ${state.message.startsWith("Check your email") ? "success-callout" : "error-callout"}">${escapeHtml(state.message)}</div>` : ""}
+      ${renderMagicLinkForm()}
     `);
     return;
   }
@@ -152,7 +152,7 @@ function renderSetupRequired() {
     <div class="brand-mark">D</div>
     <div class="eyebrow">Configuration required</div>
     <h1>The source is repaired. The deployment still needs its secure services.</h1>
-    <p>Set the following Vercel environment variables, run the included Supabase migration, and enable Google in Supabase Auth.</p>
+    <p>Set the following Vercel environment variables, run the included Supabase migration, and enable passwordless email authentication in Supabase Auth.</p>
     <ul class="setup-list">
       <li><code>SUPABASE_URL</code></li>
       <li><code>SUPABASE_PUBLISHABLE_KEY</code></li>
@@ -161,6 +161,18 @@ function renderSetupRequired() {
     </ul>
     <div class="callout">Until Supabase is configured, DealForge intentionally refuses to store personal data or expose an unsecured private workspace.</div>
   `);
+}
+
+function renderMagicLinkForm() {
+  return `
+    <form id="magic-link-form" class="auth-form">
+      <div class="field">
+        <label for="auth-email">Email address</label>
+        <input class="input" id="auth-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required>
+      </div>
+      <button class="button primary" type="submit" ${state.busy ? "disabled" : ""}>${state.busy ? "Sending…" : "Email me a sign-in link"}</button>
+      <p class="auth-note">Only the preauthorized owner email can claim this private workspace.</p>
+    </form>`;
 }
 
 function authLayout(content) {
@@ -460,7 +472,6 @@ async function handleClick(event) {
   const action = button.dataset.action;
 
   try {
-    if (action === "sign-in") return state.client.signInWithGoogle(window.location.origin);
     if (action === "sign-out") {
       await withBusy(async () => {
         await state.client.signOut();
@@ -490,6 +501,7 @@ async function handleSubmit(event) {
   event.preventDefault();
   const form = event.target;
   try {
+    if (form.id === "magic-link-form") return await requestMagicLink(new FormData(form));
     if (form.matches(".listing-analysis-form")) return await saveListingAnalysis(form.dataset.rowId, new FormData(form));
     if (form.id === "search-form") return await runSearch(new FormData(form));
     if (form.id === "save-search-form") return await saveSearch(new FormData(form));
@@ -499,6 +511,16 @@ async function handleSubmit(event) {
   } catch (error) {
     notify(errorMessage(error), true);
   }
+}
+
+async function requestMagicLink(formData) {
+  const email = String(formData.get("email") || "");
+  state.accessDenied = false;
+  await withBusy(async () => {
+    const redirectTo = `${window.location.origin}${window.location.pathname}`;
+    await state.client.signInWithMagicLink(email, redirectTo);
+    state.message = "Check your email for the one-time DealForge sign-in link.";
+  });
 }
 
 async function runSearch(formData) {
