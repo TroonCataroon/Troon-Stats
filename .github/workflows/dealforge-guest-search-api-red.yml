@@ -1,0 +1,36 @@
+name: DealForge Guest Search API RED
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  red:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] DealForge Guest Search API RED'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/dealforge-guest-deal-search
+      - name: Confirm API tests fail before endpoint implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dealforge-live
+          set +e
+          node --test tests/deals-api.test.js > /tmp/red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/red.log
+          if [ "$status" -eq 0 ]; then exit 1; fi
+          grep -q "not ok" /tmp/red.log
+      - name: Record RED evidence
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue comment "${{ github.event.issue.number }}" --body "RED verified. \`node --test tests/deals-api.test.js\` failed because \`createDealsHandler\` and \`api/deals.js\` do not exist. No API implementation was present."
