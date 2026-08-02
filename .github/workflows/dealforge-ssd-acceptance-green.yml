@@ -1,0 +1,69 @@
+name: DealForge SSD Acceptance GREEN
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] DealForge SSD Acceptance GREEN'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/dealforge-guest-deal-search
+      - name: Run acceptance test
+        id: acceptance
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          node --test tests/ssd-acceptance.test.js > /tmp/acceptance.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/acceptance.log
+          exit 0
+      - name: Run complete verification
+        id: full
+        if: steps.acceptance.outputs.status == '0'
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          npm run check > /tmp/full.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/full.log
+          exit 0
+      - name: Publish evidence
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPTANCE_STATUS: ${{ steps.acceptance.outputs.status }}
+          FULL_STATUS: ${{ steps.full.outputs.status }}
+        shell: bash
+        run: |
+          if [ "$ACCEPTANCE_STATUS" != "0" ]; then
+            heading="SSD ACCEPTANCE FAILED ($ACCEPTANCE_STATUS)"
+            log=$(grep -n -A 30 -B 8 "not ok" /tmp/acceptance.log || tail -n 80 /tmp/acceptance.log)
+          elif [ "$FULL_STATUS" != "0" ]; then
+            heading="FULL VERIFICATION FAILED ($FULL_STATUS)"
+            log=$(grep -n -A 30 -B 8 "not ok" /tmp/full.log || tail -n 80 /tmp/full.log)
+          else
+            heading="GREEN"
+            log="The private SSD acceptance suite and npm run check passed."
+          fi
+          printf '%s\n\n```text\n%s\n```\n' "$heading" "$log" > /tmp/comment.md
+          gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/comment.md
+      - name: Enforce gates
+        env:
+          ACCEPTANCE_STATUS: ${{ steps.acceptance.outputs.status }}
+          FULL_STATUS: ${{ steps.full.outputs.status }}
+        run: |
+          test "$ACCEPTANCE_STATUS" = "0"
+          test "$FULL_STATUS" = "0"
