@@ -1,0 +1,42 @@
+name: DealForge SSD Acceptance RED
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  red:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] DealForge SSD Acceptance RED'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/dealforge-guest-deal-search
+      - name: Confirm acceptance test fails before fixtures and seed
+        id: tests
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          node --test tests/ssd-acceptance.test.js > /tmp/red.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/red.log
+          exit 0
+      - name: Record RED evidence
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_STATUS: ${{ steps.tests.outputs.status }}
+        shell: bash
+        run: |
+          if [ "$TEST_STATUS" = "0" ]; then
+            gh issue comment "${{ github.event.issue.number }}" --body "RED verification failed: acceptance tests unexpectedly passed before fixtures and seed existed."
+            exit 1
+          fi
+          gh issue comment "${{ github.event.issue.number }}" --body "RED verified. The SSD acceptance suite failed because the verified fixture module and SQL seed do not exist."
