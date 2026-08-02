@@ -16,12 +16,16 @@ test("signed-out DealForge requires the private owner link before searching", ()
   assert.match(appSource, /privateAuthorizationHeader/);
 });
 
-test("private search form defaults to the requested Burien 1TB M.2 NVMe search", () => {
+test("private search state and form bind the requested Burien 1TB M.2 NVMe defaults", () => {
   assert.match(appSource, /id="private-deal-search-form"/);
-  assert.match(appSource, /value="m\.2 ssd 1 tb"/);
-  assert.match(appSource, /value="1000"/);
-  assert.match(appSource, /value="nvme"/);
-  assert.match(appSource, /value="40"/);
+  assert.match(appSource, /query:\s*"m\.2 ssd 1 tb"/);
+  assert.match(appSource, /capacityGb:\s*"1000"/);
+  assert.match(appSource, /interface:\s*"nvme"/);
+  assert.match(appSource, /radiusMiles:\s*"40"/);
+  assert.match(appSource, /value="\$\{escapeAttr\(search\.query\)\}"/);
+  assert.match(appSource, /value="\$\{escapeAttr\(search\.capacityGb\)\}"/);
+  assert.match(appSource, /value="\$\{escapeAttr\(search\.interface\)\}"/);
+  assert.match(appSource, /value="\$\{escapeAttr\(search\.radiusMiles\)\}"/);
   assert.match(appSource, /Burien, WA/);
 });
 
