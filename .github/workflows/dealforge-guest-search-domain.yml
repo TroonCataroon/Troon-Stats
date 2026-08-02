@@ -1,0 +1,26 @@
+name: DealForge Guest Search Domain
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  verify:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] DealForge Guest Search Domain'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/dealforge-guest-deal-search
+      - name: Run domain tests
+        run: cd dealforge-live && node --test tests/deal-search.test.js
+      - name: Record GREEN evidence
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue comment "${{ github.event.issue.number }}" --body "GREEN verified. \`node --test tests/deal-search.test.js\` passed all guest deal-domain tests after the minimal pure-function implementation."
