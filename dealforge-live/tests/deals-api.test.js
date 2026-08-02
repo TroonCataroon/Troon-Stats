@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+const VALID_OWNER_TOKEN = "valid_owner_token_0123456789_abcdef_ABCDEFG";
+const INVALID_OWNER_TOKEN = "invalid_owner_token_0123456789_abcdef_XYZ";
+
 async function loadApi() {
   return import("../api/deals.js").catch(() => ({}));
 }
@@ -86,7 +89,7 @@ test("rejects an owner token that the guarded RPC does not authorize", async () 
   const { createDealsHandler } = await loadApi();
   const handler = createDealsHandler({ fetchImpl: async () => jsonResponse({ authorized: false, snapshots: [] }) });
   const response = responseRecorder();
-  await handler(request("/api/deals?q=1tb%20nvme", "invalid-owner-token"), response);
+  await handler(request("/api/deals?q=1tb%20nvme", INVALID_OWNER_TOKEN), response);
   assert.equal(response.statusCode, 403);
   assert.equal(response.body.listings, undefined);
   assert.match(response.body.error, /not authorized/i);
@@ -96,7 +99,7 @@ test("rejects a missing query when an owner token is present", async () => {
   const { createDealsHandler } = await loadApi();
   const handler = createDealsHandler({ fetchImpl: async () => jsonResponse({ authorized: true, snapshots: [] }) });
   const response = responseRecorder();
-  await handler(request("/api/deals", "valid-owner-token"), response);
+  await handler(request("/api/deals", VALID_OWNER_TOKEN), response);
   assert.equal(response.statusCode, 400);
   assert.match(response.body.error, /query/i);
 });
@@ -104,7 +107,6 @@ test("rejects a missing query when an owner token is present", async () => {
 test("returns ranked source-backed snapshots through the guarded RPC", async () => {
   const { createDealsHandler } = await loadApi();
   const calls = [];
-  const ownerToken = "private-owner-token-value";
   const handler = createDealsHandler({
     fetchImpl: async (url, options) => {
       calls.push({ url, options });
@@ -121,7 +123,7 @@ test("returns ranked source-backed snapshots through the guarded RPC", async () 
   const response = responseRecorder();
   await handler(request(
     "/api/deals?q=m.2%20ssd%201%20tb&capacityGb=1000&interface=nvme&radiusMiles=40&limit=10",
-    ownerToken,
+    VALID_OWNER_TOKEN,
   ), response);
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.dataMode, "verified-private-snapshots");
@@ -129,13 +131,13 @@ test("returns ranked source-backed snapshots through the guarded RPC", async () 
   assert.equal(response.body.listings[0].id, "redmond-1tb");
   assert.equal(response.body.listings[0].effectivePrice, 100);
   assert.equal(response.body.listings[0].warnings.includes("$100 minimum purchase"), true);
-  assert.equal(JSON.stringify(response.body).includes(ownerToken), false);
+  assert.equal(JSON.stringify(response.body).includes(VALID_OWNER_TOKEN), false);
   assert.equal(calls.length, 1);
   assert.match(calls[0].url, /rpc\/private_deal_search/);
   assert.doesNotMatch(calls[0].url, /deal_snapshots\?/);
   assert.equal(calls[0].options.headers.apikey.startsWith("sb_publishable_"), true);
   assert.equal(calls[0].options.headers.Authorization.startsWith("Bearer sb_publishable_"), true);
-  assert.deepEqual(JSON.parse(calls[0].options.body), { p_access_token: ownerToken });
+  assert.deepEqual(JSON.parse(calls[0].options.body), { p_access_token: VALID_OWNER_TOKEN });
 });
 
 test("returns real-or-empty for an authorized owner when no snapshot matches", async () => {
@@ -145,7 +147,7 @@ test("returns real-or-empty for an authorized owner when no snapshot matches", a
     now: () => new Date("2026-08-02T16:00:00.000Z"),
   });
   const response = responseRecorder();
-  await handler(request("/api/deals?q=1tb%20nvme&capacityGb=1000", "valid-owner-token"), response);
+  await handler(request("/api/deals?q=1tb%20nvme&capacityGb=1000", VALID_OWNER_TOKEN), response);
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.returnedCount, 0);
   assert.deepEqual(response.body.listings, []);
@@ -156,7 +158,7 @@ test("returns 503 when the guarded Supabase RPC cannot be queried", async () => 
   const { createDealsHandler } = await loadApi();
   const handler = createDealsHandler({ fetchImpl: async () => jsonResponse({ message: "unavailable" }, 503) });
   const response = responseRecorder();
-  await handler(request("/api/deals?q=1tb%20nvme", "valid-owner-token"), response);
+  await handler(request("/api/deals?q=1tb%20nvme", VALID_OWNER_TOKEN), response);
   assert.equal(response.statusCode, 503);
   assert.equal(response.body.listings, undefined);
   assert.match(response.body.error, /temporarily unavailable/i);
