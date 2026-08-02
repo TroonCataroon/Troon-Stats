@@ -1,0 +1,111 @@
+name: DealForge Private Search Final Gate
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] DealForge Private Search Final Gate'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/dealforge-guest-deal-search
+      - name: Run tests with exact count
+        id: tests
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          node --test tests/*.test.js > /tmp/tests.log 2>&1
+          status=$?
+          count=$(grep '^# tests ' /tmp/tests.log | tail -1 | awk '{print $3}')
+          passed=$(grep '^# pass ' /tmp/tests.log | tail -1 | awk '{print $3}')
+          failed=$(grep '^# fail ' /tmp/tests.log | tail -1 | awk '{print $3}')
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "count=${count:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "passed=${passed:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "failed=${failed:-unknown}" >> "$GITHUB_OUTPUT"
+          cat /tmp/tests.log
+          exit 0
+      - name: Run production build
+        id: build
+        if: steps.tests.outputs.status == '0'
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          npm run build > /tmp/build.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/build.log
+          exit 0
+      - name: Run smoke checks
+        id: smoke
+        if: steps.tests.outputs.status == '0' && steps.build.outputs.status == '0'
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          node scripts/smoke.mjs > /tmp/smoke.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/smoke.log
+          exit 0
+      - name: Verify private security contract
+        id: security
+        if: steps.tests.outputs.status == '0' && steps.build.outputs.status == '0' && steps.smoke.outputs.status == '0'
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          status=0
+          grep -q 'alter table public.deal_snapshots force row level security' supabase/migrations/003_private_deal_snapshots.sql || status=1
+          grep -q 'revoke all on public.deal_snapshots from public, anon, authenticated' supabase/migrations/003_private_deal_snapshots.sql || status=1
+          grep -q 'extensions.digest(p_access_token' supabase/migrations/003_private_deal_snapshots.sql || status=1
+          grep -q 'Authorization: `Bearer ${token}`' lib/private-access.js || status=1
+          grep -q 'rpc/private_deal_search' api/deals.js || status=1
+          grep -q 'return response.status(401)' api/deals.js || status=1
+          grep -q 'return response.status(403)' api/deals.js || status=1
+          if grep -R -n -E 'xetw-glefVqXuFy2ldUuCWi48M_S0GwsJLuBXrkK5NE|f42479f9dbe483f7b59ceedd999b2a84f41289231fab51d047389152283d75c5' . --exclude-dir=.git; then
+            echo 'Owner token or hash leaked into source.'
+            status=1
+          fi
+          if grep -R -n -E 'grant (select|insert|update|delete).*deal_snapshots.*(anon|authenticated)' supabase --ignore-case; then
+            echo 'Direct client table grant found.'
+            status=1
+          fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Publish final evidence
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_STATUS: ${{ steps.tests.outputs.status }}
+          TEST_COUNT: ${{ steps.tests.outputs.count }}
+          TEST_PASSED: ${{ steps.tests.outputs.passed }}
+          TEST_FAILED: ${{ steps.tests.outputs.failed }}
+          BUILD_STATUS: ${{ steps.build.outputs.status }}
+          SMOKE_STATUS: ${{ steps.smoke.outputs.status }}
+          SECURITY_STATUS: ${{ steps.security.outputs.status }}
+        shell: bash
+        run: |
+          printf 'Final gate results:\n\n- Tests: %s total, %s passed, %s failed, status %s\n- Build status: %s\n- Smoke status: %s\n- Security contract status: %s\n' "$TEST_COUNT" "$TEST_PASSED" "$TEST_FAILED" "$TEST_STATUS" "$BUILD_STATUS" "$SMOKE_STATUS" "$SECURITY_STATUS" > /tmp/comment.md
+          gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/comment.md
+      - name: Enforce final gate
+        env:
+          TEST_STATUS: ${{ steps.tests.outputs.status }}
+          BUILD_STATUS: ${{ steps.build.outputs.status }}
+          SMOKE_STATUS: ${{ steps.smoke.outputs.status }}
+          SECURITY_STATUS: ${{ steps.security.outputs.status }}
+        run: |
+          test "$TEST_STATUS" = "0"
+          test "$BUILD_STATUS" = "0"
+          test "$SMOKE_STATUS" = "0"
+          test "$SECURITY_STATUS" = "0"
