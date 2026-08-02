@@ -1,0 +1,32 @@
+name: DealForge Guest Search RED
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+jobs:
+  red:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] DealForge Guest Search RED'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/dealforge-guest-deal-search
+      - name: Confirm domain test fails for missing implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dealforge-live
+          set +e
+          node --test tests/deal-search.test.js > /tmp/red.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/red.log
+          if [ "$status" -eq 0 ]; then
+            echo "Expected RED test to fail before implementation."
+            exit 1
+          fi
+          grep -q "function" /tmp/red.log
+          grep -q "not ok" /tmp/red.log
+          echo "RED verified: behavior assertions fail because deal-search functions are absent."
