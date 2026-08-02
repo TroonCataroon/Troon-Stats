@@ -74,7 +74,7 @@ begin
     select 1
     from private.deal_search_owner
     where singleton = true
-      and token_sha256 = encode(digest(p_access_token, 'sha256'), 'hex')
+      and token_sha256 = encode(extensions.digest(p_access_token, 'sha256'), 'hex')
   ) into token_is_valid;
 
   if not token_is_valid then
