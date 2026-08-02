@@ -1,0 +1,100 @@
+name: Run DealForge Private UI Script
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  run:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] Run DealForge Private UI Script'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/dealforge-guest-deal-search
+          fetch-depth: 0
+
+      - name: Apply patch
+        id: patch
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          python3 scripts/apply_private_search_ui.py > /tmp/patch.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/patch.log
+          exit 0
+
+      - name: Focused tests
+        id: focused
+        if: steps.patch.outputs.status == '0'
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          node --test tests/private-access.test.js tests/private-search-ui.test.js > /tmp/focused.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/focused.log
+          exit 0
+
+      - name: Full verification
+        id: full
+        if: steps.patch.outputs.status == '0' && steps.focused.outputs.status == '0'
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          npm run check > /tmp/full.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/full.log
+          exit 0
+
+      - name: Publish evidence
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATCH_STATUS: ${{ steps.patch.outputs.status }}
+          FOCUSED_STATUS: ${{ steps.focused.outputs.status }}
+          FULL_STATUS: ${{ steps.full.outputs.status }}
+        shell: bash
+        run: |
+          if [ "$PATCH_STATUS" != "0" ]; then
+            heading="PATCH FAILED ($PATCH_STATUS)"
+            log=$(tail -n 40 /tmp/patch.log)
+          elif [ "$FOCUSED_STATUS" != "0" ]; then
+            heading="FOCUSED TESTS FAILED ($FOCUSED_STATUS)"
+            log=$(tail -n 60 /tmp/focused.log)
+          elif [ "$FULL_STATUS" != "0" ]; then
+            heading="FULL VERIFICATION FAILED ($FULL_STATUS)"
+            log=$(tail -n 80 /tmp/full.log)
+          else
+            heading="GREEN"
+            log="Focused private access/UI tests and npm run check passed."
+          fi
+          printf '%s\n\n```text\n%s\n```\n' "$heading" "$log" > /tmp/comment.md
+          gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/comment.md
+
+      - name: Commit only after all gates pass
+        shell: bash
+        env:
+          PATCH_STATUS: ${{ steps.patch.outputs.status }}
+          FOCUSED_STATUS: ${{ steps.focused.outputs.status }}
+          FULL_STATUS: ${{ steps.full.outputs.status }}
+        run: |
+          set -euo pipefail
+          test "$PATCH_STATUS" = "0"
+          test "$FOCUSED_STATUS" = "0"
+          test "$FULL_STATUS" = "0"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dealforge-live/web/app.js dealforge-live/web/styles.css
+          git commit -m "feat: add owner-only deal search UI"
+          git push origin HEAD:automation/dealforge-guest-deal-search
