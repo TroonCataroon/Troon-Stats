@@ -74,7 +74,7 @@ jobs:
             log=$(tail -n 60 /tmp/focused.log)
           elif [ "$FULL_STATUS" != "0" ]; then
             heading="FULL VERIFICATION FAILED ($FULL_STATUS)"
-            log=$(tail -n 80 /tmp/full.log)
+            log=$(grep -n -A 24 -B 8 "not ok" /tmp/full.log || tail -n 100 /tmp/full.log)
           else
             heading="GREEN"
             log="Focused private access/UI tests and npm run check passed."
