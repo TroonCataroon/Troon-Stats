@@ -5,6 +5,10 @@ on:
     types: [opened]
   workflow_dispatch:
 
+permissions:
+  issues: write
+  contents: read
+
 jobs:
   red:
     if: github.event_name != 'issues' || github.event.issue.title == '[automation] DealForge Guest Search RED'
@@ -30,3 +34,8 @@ jobs:
           grep -q "function" /tmp/red.log
           grep -q "not ok" /tmp/red.log
           echo "RED verified: behavior assertions fail because deal-search functions are absent."
+      - name: Record RED evidence
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue comment "${{ github.event.issue.number }}" --body "RED verified. \`node --test tests/deal-search.test.js\` failed with behavior assertions showing the deal-search functions are absent. No production implementation existed during this run."
