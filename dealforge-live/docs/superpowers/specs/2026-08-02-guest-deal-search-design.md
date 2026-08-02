@@ -1,16 +1,20 @@
-# DealForge Guest Deal Search Design
+# DealForge Private Deal Search Design
 
 ## Objective
 
-Allow DealForge to search and rank current, source-backed deal snapshots without requiring authentication, while keeping every personal-data and workspace write path fail-closed until private authentication is operational.
+Allow the sole owner of DealForge to search and rank current, source-backed deal snapshots while keeping the entire application private. No anonymous visitor may read deal data, call the search successfully, or access any workspace data.
 
-The acceptance search is `m.2 ssd 1 tb` near Burien, Washington. The result set must include a current local or inexpensive listing and explain price, distance, freshness, condition, and limitations.
+The acceptance search is `m.2 ssd 1 tb` near Burien, Washington. The private result set must include a current local or inexpensive listing and explain price, distance, freshness, condition, and limitations.
 
 ## Selected approach
 
-Use a dedicated read-only `public.deal_snapshots` table in the existing Supabase database. A Vercel function queries active, non-expired rows through the publishable key. Anonymous users receive read-only search results; no anonymous insert, update, delete, RPC, watchlist, settings, comparison, alert, or import operation is added.
+Use a dedicated `public.deal_snapshots` table in the existing Supabase database, but grant no direct table access to `anon` or `authenticated`. Store only a SHA-256 hash of one high-entropy owner access token in `private.deal_search_owner`. A security-definer RPC validates the supplied token and returns active, non-expired snapshots only when the hash matches.
 
-This is preferred over weakening authentication, restoring browser-local persistence, scraping marketplaces at request time, or embedding a static result in the frontend. The table can be refreshed by controlled ingestion jobs or verified administrative writes without changing the guest API.
+The private Vercel endpoint requires `Authorization: Bearer <owner-token>`, forwards the token to the RPC, and ranks the returned snapshots. The token is never committed to source control, embedded in the public JavaScript bundle, returned by an API, or stored in a public database table.
+
+The browser receives the token through a one-time URL fragment, stores it locally on the owner's device, removes the fragment from browser history, and sends it only in the Authorization header. A rotate function allows the token to be replaced if the private link is ever exposed.
+
+This is preferred over anonymous read access, weakening Supabase RLS, browser-local deal persistence, public guest search, or embedding a secret in the public repository.
 
 ## Data model
 
@@ -26,11 +30,13 @@ Each snapshot stores:
 - `warnings` JSON array and `evidence` JSON object.
 - `observed_at`, `expires_at`, and `active`.
 
-RLS is enabled. `anon` and `authenticated` receive SELECT only for rows where `active = true` and `expires_at > now()`. They receive no write privileges.
+RLS is enabled and forced. `anon` and `authenticated` receive no SELECT, INSERT, UPDATE, or DELETE grant on `deal_snapshots`. Only `public.private_deal_snapshots(p_access_token text)` can return rows, and it returns an empty set for an invalid token.
+
+`private.deal_search_owner` stores one token hash and rotation timestamp. The cleartext token never enters migrations, seeds, tests, commits, or logs.
 
 ## Search API
 
-`GET /api/deals` accepts:
+`GET /api/deals` requires a Bearer owner token and accepts:
 
 - `q`, required, maximum 120 characters.
 - `capacityGb`, optional integer from 1 to 100000.
@@ -40,7 +46,7 @@ RLS is enabled. `anon` and `authenticated` receive SELECT only for rows where `a
 - `maxPrice`, optional number from 0 to 100000.
 - `limit`, optional integer from 1 to 50, default 20.
 
-The API retrieves active snapshots, applies deterministic query matching, filtering, and ranking in application code, and returns `real-or-empty` data. It never invents listings or prices.
+Missing or malformed authorization returns HTTP 401. A rejected owner token returns HTTP 403. The API applies deterministic query matching, filtering, and ranking in application code and returns `real-or-empty` data. It never invents listings or prices.
 
 ## Ranking
 
@@ -57,7 +63,9 @@ Every result exposes the score components and warnings. A low advertised unit pr
 
 ## Frontend
 
-The signed-out screen gains a guest search form and result cards. Private workspace login remains visually separate. Guest cards show:
+The signed-out screen gains an owner-only deal search area. Without a valid locally stored owner token, it displays `Private access link required` and does not submit searches. Opening the one-time owner link imports the token from the URL fragment, clears the fragment, and automatically runs the default search.
+
+Private result cards show:
 
 - Advertised price and effective minimum spend.
 - Pickup location and approximate distance.
@@ -66,23 +74,25 @@ The signed-out screen gains a guest search form and result cards. Private worksp
 - Warnings such as minimum purchase, used condition, stock not guaranteed, or shipping unknown.
 - A source link.
 
-The default example query is `m.2 ssd 1 tb`; location defaults to Burien, WA and radius to 40 miles for this private deployment.
+The default query is `m.2 ssd 1 tb`; location defaults to Burien, WA and radius to 40 miles for this single-owner deployment.
 
 ## Seed evidence for acceptance verification
 
 The acceptance dataset includes independently verified snapshots:
 
-- Craigslist Redmond: 1TB PCIe 3 NVMe drives advertised from $60, updated 2026-07-17, approximately 24.6 driving miles from Burien, with a $100 minimum purchase and used-condition warning.
-- Newegg: ADATA LEGEND 710 1TB M.2 2280 NVMe advertised at $139.99 with free shipping, observed from the current search page.
-- Best Buy: Crucial P310 1TB PCIe Gen4 NVMe M.2 advertised at $179.99; local pickup must be labeled as store-dependent rather than guaranteed.
+- Craigslist Redmond: 1TB PCIe 3 NVMe drives advertised from $60, updated 2026-07-17, with a $100 minimum purchase and used-condition warning.
+- Best Buy: current 1TB M.2 NVMe offers from the retailer's search result, with local pickup labeled store-dependent rather than guaranteed.
+- Additional shipped alternatives may be included only when their current source page and price are verified during implementation.
 
 ## Failure behavior
 
-- Invalid parameters return HTTP 400 with a concise error.
+- Missing access token returns HTTP 401.
+- Invalid access token returns HTTP 403 with no deal data.
+- Invalid parameters return HTTP 400.
 - Supabase or network failure returns HTTP 503 and no fabricated fallback rows.
 - No matches return HTTP 200 with an empty list and filter metadata.
 - Expired or inactive rows are never returned.
-- Guest search cannot access private tables.
+- No anonymous role can read or write the snapshot table directly.
 
 ## Testing and verification
 
@@ -92,7 +102,9 @@ Test-first work must cover:
 - Effective price with minimum purchase.
 - Local-distance and freshness ranking.
 - Exclusion of expired and incompatible rows.
-- API validation and real-or-empty response behavior.
-- Signed-out UI containing a usable guest search form without enabling private writes.
+- API 401, 403, validation, ranked response, empty response, and upstream failure.
+- Token import from a URL fragment, fragment removal, and owner-only UI behavior.
+- Database grants proving no direct anonymous or authenticated table access.
+- Security-definer RPC returning rows only for the configured owner token.
 
-Completion requires a fresh full test suite, production build, smoke checks, deployment, live `/api/deals?q=m.2%20ssd%201%20tb&capacityGb=1000&interface=nvme&radiusMiles=40` verification, frontend verification, database policy verification, and zero new Vercel runtime errors.
+Completion requires a fresh full test suite, production build, smoke checks, deployment, a live authorized `/api/deals` acceptance request, an unauthorized rejection check, frontend verification through the private owner link, database privilege verification, and zero new Vercel runtime errors.
