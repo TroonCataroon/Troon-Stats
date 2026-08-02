@@ -6,6 +6,7 @@ import { calculateDealScore, recommendedMaximumBid } from "/lib/scoring.js";
 import { normalizePreferences } from "/lib/preferences.js";
 import { buildSourceStatus } from "/lib/source-status.js";
 import { SupabaseRestClient } from "/lib/supabase-rest.js";
+import { clearPrivateAccessToken, importPrivateAccessFromHash, privateAuthorizationHeader } from "/lib/private-access.js";
 
 const NAV_ITEMS = [
   ["discover", "Discover"],
@@ -38,7 +39,20 @@ const state = {
     manualImports: [],
     alertEvents: [],
   },
-  compare: [],
+compare: [],
+privateDeals: {
+  token: null,
+  busy: false,
+  message: null,
+  listings: [],
+  search: {
+    query: "m.2 ssd 1 tb",
+    capacityGb: "1000",
+    interface: "nvme",
+    radiusMiles: "40",
+    maxPrice: "250",
+  },
+},
   message: null,
 };
 
@@ -63,6 +77,7 @@ async function boot() {
     ]);
     state.config = config;
     state.sources = buildSourceStatus(gateway.sources ?? {});
+    state.privateDeals.token = importPrivateAccessFromHash();
 
     if (!config.authConfigured) {
       state.booting = false;
@@ -92,6 +107,14 @@ async function boot() {
       }
     }
 
+if (!state.user && state.privateDeals.token) {
+  try {
+    await fetchPrivateDeals();
+  } catch (error) {
+    state.privateDeals.message = errorMessage(error);
+  }
+}
+
     const initialRoute = window.location.hash.replace(/^#/, "");
     if (NAV_ITEMS.some(([key]) => key === initialRoute)) state.route = initialRoute;
   } catch (error) {
@@ -111,29 +134,25 @@ function render() {
     renderSetupRequired();
     return;
   }
-  if (state.accessDenied) {
-    app.innerHTML = authLayout(`
-      <div class="brand-mark">D</div>
-      <div class="eyebrow">Access denied</div>
-      <h1>This workspace already has an owner.</h1>
-      <p>DealForge is configured as a private, single-user application. Request a sign-in link using the authorized email address.</p>
-      ${renderMagicLinkForm()}
-    `);
-    return;
-  }
-  if (!state.user) {
-    app.innerHTML = authLayout(`
-      <div class="brand-mark">D</div>
-      <div class="eyebrow">Private workspace</div>
-      <h1>Find the deal. Count the real cost.</h1>
-      <p>Search connected public auction sources, compare landed cost, save evidence, and keep your data synchronized through Supabase.</p>
-      ${state.message ? `<div class="callout ${state.message.startsWith("Check your email") ? "success-callout" : "error-callout"}">${escapeHtml(state.message)}</div>` : ""}
-      ${renderMagicLinkForm()}
-    `);
-    return;
-  }
+if (!state.user) {
+  app.innerHTML = `
+    <main class="private-search-shell">
+      <section class="private-search-card">
+        <div class="brand-mark">D</div>
+        <div class="eyebrow">Owner-only deal intelligence</div>
+        <h1>Find the deal. Count the real cost.</h1>
+        <p>This search is private to the owner link stored on this browser. It does not expose your workspace or allow public searches.</p>
+        ${renderPrivateDealFinder()}
+        <div class="workspace-lock">
+          <strong>Private workspace editing remains locked.</strong>
+          <p>${state.accessDenied ? "The authenticated workspace already has a different owner session." : "Deal search works independently while the Supabase sign-in provider remains unavailable."}</p>
+        </div>
+      </section>
+    </main>`;
+  return;
+}
 
-  refreshListingIndex();
+refreshListingIndex();
   app.innerHTML = `
     <div class="app-shell ${state.busy ? "loading" : ""}">
       ${renderSidebar()}
@@ -145,6 +164,50 @@ function render() {
       ${renderMobileNav()}
     </div>
   `;
+}
+
+function renderPrivateDealFinder() {
+  if (!state.privateDeals.token) {
+    return `<div class="callout private-access-required"><strong>Private access link required.</strong><p>Open the owner-only DealForge link on this device. No search data is publicly readable.</p></div>`;
+  }
+  const search = state.privateDeals.search;
+  return `
+    <form id="private-deal-search-form" class="private-search-form">
+      <div class="field private-query"><label for="private-query">Search</label><input class="input" id="private-query" name="query" value="${escapeAttr(search.query)}" required></div>
+      <div class="field"><label>Capacity (GB)</label><input class="input" name="capacityGb" type="number" min="1" value="${escapeAttr(search.capacityGb)}"></div>
+      <div class="field"><label>Interface</label><input class="input" name="interface" value="${escapeAttr(search.interface)}"></div>
+      <div class="field"><label>Radius (miles)</label><input class="input" name="radiusMiles" type="number" min="1" max="500" value="${escapeAttr(search.radiusMiles)}"></div>
+      <div class="field"><label>Maximum effective spend</label><input class="input" name="maxPrice" type="number" min="0" value="${escapeAttr(search.maxPrice)}"></div>
+      <div class="field private-location"><label>Search center</label><input class="input" value="Burien, WA" readonly></div>
+      <div class="private-search-actions"><button class="button primary" type="submit" ${state.privateDeals.busy ? "disabled" : ""}>${state.privateDeals.busy ? "Searching…" : "Search private deals"}</button><button class="button ghost" type="button" data-action="clear-private-access">Remove private access from this browser</button></div>
+    </form>
+    ${state.privateDeals.message ? `<div class="callout error-callout">${escapeHtml(state.privateDeals.message)}</div>` : ""}
+    ${renderPrivateDealResults()}`;
+}
+
+function renderPrivateDealResults() {
+  if (state.privateDeals.busy) return `<div class="empty"><strong>Searching verified snapshots…</strong><p>Checking current private deal evidence.</p></div>`;
+  if (!state.privateDeals.listings.length) return `<div class="empty"><strong>No matching private deals loaded.</strong><p>Run the default 1TB M.2 NVMe search.</p></div>`;
+  return `<div class="private-results"><div class="section-head"><div><h2>Best private matches</h2><p>${state.privateDeals.listings.length} source-backed results</p></div></div><div class="grid">${state.privateDeals.listings.map(renderPrivateDealCard).join("")}</div></div>`;
+}
+
+function renderPrivateDealCard(listing) {
+  const warnings = Array.isArray(listing.warnings) ? listing.warnings : [];
+  const advertised = Number(listing.item_price) + Number(listing.shipping_cost || 0);
+  const distance = Number.isFinite(Number(listing.distance_miles)) ? `${Number(listing.distance_miles).toFixed(1)} miles from Burien` : "Shipped alternative";
+  return `<article class="listing-card private-deal-card">
+    <div class="card-top"><div><span class="source-chip">${escapeHtml(listing.source)}</span><h3>${escapeHtml(listing.title)}</h3></div><div class="price">${formatMoney(listing.effectivePrice)}</div></div>
+    <div class="private-evidence-grid">
+      <div><span>Advertised price</span><strong>${formatMoney(advertised)}</strong></div>
+      <div><span>Effective spend</span><strong>${formatMoney(listing.effectivePrice)}</strong></div>
+      <div><span>Location</span><strong>${escapeHtml(distance)}</strong></div>
+      <div><span>Observed</span><strong>${escapeHtml(formatDate(listing.observed_at))}</strong></div>
+      <div><span>Hardware</span><strong>${escapeHtml(`${listing.capacity_gb ?? "?"}GB ${listing.form_factor ?? ""} ${listing.interface ?? ""}`.trim())}</strong></div>
+      <div><span>Condition</span><strong>${escapeHtml(listing.condition ?? "unknown")}</strong></div>
+    </div>
+    <div class="private-warning-list"><strong>Warnings</strong>${warnings.length ? `<ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : `<p>None recorded.</p>`}</div>
+    ${listing.url ? `<a class="button small ghost" href="${escapeAttr(listing.url)}" target="_blank" rel="noopener noreferrer">Open source</a>` : ""}
+  </article>`;
 }
 
 function renderSetupRequired() {
@@ -472,6 +535,14 @@ async function handleClick(event) {
   const action = button.dataset.action;
 
   try {
+if (action === "clear-private-access") {
+  clearPrivateAccessToken();
+  state.privateDeals.token = null;
+  state.privateDeals.listings = [];
+  state.privateDeals.message = null;
+  render();
+  return;
+}
     if (action === "sign-out") {
       await withBusy(async () => {
         await state.client.signOut();
@@ -501,6 +572,7 @@ async function handleSubmit(event) {
   event.preventDefault();
   const form = event.target;
   try {
+    if (form.id === "private-deal-search-form") return await runPrivateDealSearch(new FormData(form));
     if (form.id === "magic-link-form") return await requestMagicLink(new FormData(form));
     if (form.matches(".listing-analysis-form")) return await saveListingAnalysis(form.dataset.rowId, new FormData(form));
     if (form.id === "search-form") return await runSearch(new FormData(form));
@@ -510,6 +582,53 @@ async function handleSubmit(event) {
     if (form.id === "settings-form") return await saveSettings(new FormData(form));
   } catch (error) {
     notify(errorMessage(error), true);
+  }
+}
+
+async function fetchPrivateDeals() {
+  const search = state.privateDeals.search;
+  const query = new URLSearchParams({
+    q: search.query,
+    capacityGb: search.capacityGb,
+    interface: search.interface,
+    radiusMiles: search.radiusMiles,
+    maxPrice: search.maxPrice,
+    limit: "20",
+  });
+  const response = await fetch(`/api/deals?${query}`, {
+    headers: privateAuthorizationHeader(state.privateDeals.token),
+  });
+  const body = await response.json();
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      clearPrivateAccessToken();
+      state.privateDeals.token = null;
+      state.privateDeals.listings = [];
+    }
+    throw new Error(body.error || `Private search failed with ${response.status}.`);
+  }
+  state.privateDeals.listings = Array.isArray(body.listings) ? body.listings : [];
+  state.privateDeals.message = null;
+}
+
+async function runPrivateDealSearch(formData) {
+  state.privateDeals.search = {
+    query: String(formData.get("query") || "").trim(),
+    capacityGb: String(formData.get("capacityGb") || "").trim(),
+    interface: String(formData.get("interface") || "").trim(),
+    radiusMiles: String(formData.get("radiusMiles") || "").trim(),
+    maxPrice: String(formData.get("maxPrice") || "").trim(),
+  };
+  state.privateDeals.busy = true;
+  state.privateDeals.message = null;
+  render();
+  try {
+    await fetchPrivateDeals();
+  } catch (error) {
+    state.privateDeals.message = errorMessage(error);
+  } finally {
+    state.privateDeals.busy = false;
+    render();
   }
 }
 
