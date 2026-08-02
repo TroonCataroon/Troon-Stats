@@ -1,0 +1,65 @@
+name: DealForge Private Migration GREEN
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] DealForge Private Migration GREEN'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/dealforge-guest-deal-search
+      - name: Run focused migration test
+        id: focused
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          node --test tests/private-deal-migration.test.js > /tmp/focused.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/focused.log
+          exit 0
+      - name: Run full verification
+        id: full
+        if: steps.focused.outputs.status == '0'
+        shell: bash
+        run: |
+          set +e
+          cd dealforge-live
+          npm run check > /tmp/full.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/full.log
+          exit 0
+      - name: Publish evidence
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FOCUSED_STATUS: ${{ steps.focused.outputs.status }}
+          FULL_STATUS: ${{ steps.full.outputs.status }}
+        shell: bash
+        run: |
+          if [ "$FOCUSED_STATUS" != "0" ]; then
+            body="FOCUSED MIGRATION TEST FAILED ($FOCUSED_STATUS)."
+          elif [ "$FULL_STATUS" != "0" ]; then
+            body="FULL VERIFICATION FAILED ($FULL_STATUS)."
+          else
+            body="GREEN verified. The schema-qualified pgcrypto regression test and npm run check passed."
+          fi
+          gh issue comment "${{ github.event.issue.number }}" --body "$body"
+      - name: Enforce gates
+        env:
+          FOCUSED_STATUS: ${{ steps.focused.outputs.status }}
+          FULL_STATUS: ${{ steps.full.outputs.status }}
+        run: |
+          test "$FOCUSED_STATUS" = "0"
+          test "$FULL_STATUS" = "0"
