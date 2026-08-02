@@ -1,0 +1,116 @@
+name: Diagnose DealForge Private Search UI
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  diagnose:
+    if: github.event_name != 'issues' || github.event.issue.title == '[automation] Diagnose DealForge Private Search UI'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: tooling
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/dealforge-guest-deal-search
+          fetch-depth: 0
+          path: repo
+
+      - name: Extract and run the verified patch step
+        id: patch
+        shell: bash
+        run: |
+          set +e
+          python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+          source = Path('tooling/.github/workflows/implement-dealforge-private-search-ui-v2.yml').read_text()
+          start = source.index('      - name: Patch signed-out owner search\n')
+          end = source.index('      - name: Run focused tests\n', start)
+          section = source[start:end]
+          script = textwrap.dedent(section.split('        run: |\n', 1)[1])
+          Path('/tmp/apply-private-ui.sh').write_text(script)
+          PY
+          cd repo
+          bash /tmp/apply-private-ui.sh > /tmp/patch.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/patch.log
+          exit 0
+
+      - name: Run focused tests
+        id: focused
+        if: steps.patch.outputs.status == '0'
+        shell: bash
+        run: |
+          set +e
+          cd repo/dealforge-live
+          node --test tests/private-access.test.js tests/private-search-ui.test.js > /tmp/focused.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/focused.log
+          exit 0
+
+      - name: Run full verification
+        id: full
+        if: steps.patch.outputs.status == '0' && steps.focused.outputs.status == '0'
+        shell: bash
+        run: |
+          set +e
+          cd repo/dealforge-live
+          npm run check > /tmp/full.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat /tmp/full.log
+          exit 0
+
+      - name: Publish diagnostic evidence
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATCH_STATUS: ${{ steps.patch.outputs.status }}
+          FOCUSED_STATUS: ${{ steps.focused.outputs.status }}
+          FULL_STATUS: ${{ steps.full.outputs.status }}
+        shell: bash
+        run: |
+          if [ "$PATCH_STATUS" != "0" ]; then
+            log=$(tail -n 35 /tmp/patch.log)
+            heading="PATCH FAILED ($PATCH_STATUS)"
+          elif [ "$FOCUSED_STATUS" != "0" ]; then
+            log=$(tail -n 45 /tmp/focused.log)
+            heading="FOCUSED TESTS FAILED ($FOCUSED_STATUS)"
+          elif [ "$FULL_STATUS" != "0" ]; then
+            log=$(tail -n 60 /tmp/full.log)
+            heading="FULL VERIFICATION FAILED ($FULL_STATUS)"
+          else
+            log="All focused and full checks passed."
+            heading="GREEN"
+          fi
+          printf '%s\n\n```text\n%s\n```\n' "$heading" "$log" > /tmp/comment.md
+          gh issue comment "${{ github.event.issue.number }}" --body-file /tmp/comment.md
+
+      - name: Commit only after all gates pass
+        shell: bash
+        env:
+          PATCH_STATUS: ${{ steps.patch.outputs.status }}
+          FOCUSED_STATUS: ${{ steps.focused.outputs.status }}
+          FULL_STATUS: ${{ steps.full.outputs.status }}
+        run: |
+          set -euo pipefail
+          test "$PATCH_STATUS" = "0"
+          test "$FOCUSED_STATUS" = "0"
+          test "$FULL_STATUS" = "0"
+          cd repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dealforge-live/web/app.js dealforge-live/web/styles.css
+          git commit -m "feat: add owner-only deal search UI"
+          git push origin HEAD:automation/dealforge-guest-deal-search
